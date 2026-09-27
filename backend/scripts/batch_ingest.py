@@ -6,7 +6,7 @@ Batch ingestion pipeline for expanding Bowen's legislation bank.
 Downloads HTML from legislation.govt.nz, parses, chunks, and regenerates embeddings.
 
 Usage:
-    cd ~/Desktop/magna
+    cd ~/Desktop/bowenpublic
     source backend/venv/bin/activate
     python backend/scripts/batch_ingest.py --batch 1
     python backend/scripts/batch_ingest.py --batch 1 --dry-run
@@ -82,6 +82,9 @@ def download_html(act, dry_run=False):
             "User-Agent": "BowenPublic-LegislationIngester/1.0 (research; joe@bowenpublic.com)"
         })
         resp.raise_for_status()
+        # The site sends UTF-8 without declaring it in the header, and requests
+        # then falls back to Latin-1, which corrupts macrons and dashes.
+        resp.encoding = "utf-8"
 
         # Check if we got a meaningful page (not a redirect to an error page)
         if len(resp.text) < 1000:
@@ -92,6 +95,16 @@ def download_html(act, dry_run=False):
         if "This Act has been repealed" in resp.text or "repealed" in resp.text[:2000].lower():
             print(f"    [skip] Act appears to be repealed — skipping (in-force only policy)")
             act["status"] = "skipped_repealed"
+            return None
+
+        # The URL is built from a year and number; if the number is wrong the
+        # site returns a different Act. Check the page is the one asked for.
+        sys.path.insert(0, str(MAGNA_ROOT / "backend" / "scripts"))
+        from parse_legislation import extract_page_title, titles_match
+        page_title = extract_page_title(resp.text)
+        if not titles_match(act["title"], page_title):
+            print(f"    [error] Expected {act['title']!r} but the page is {page_title!r}")
+            act["status"] = "wrong_act"
             return None
 
         with open(html_path, 'w', encoding='utf-8') as f:
@@ -260,7 +273,10 @@ def chunk_single_act(slug):
 def rebuild_all_chunks():
     """Rebuild the combined all_chunks.json from individual chunk files."""
     print("\n  Rebuilding all_chunks.json...")
-    chunk_files = sorted(PROCESSED_CHUNKS_DIR.glob("*_chunks.json"))
+    # all_chunks.json is this function's own output and matches the glob;
+    # reading it back in re-ingests the previous build (NOTES-duplication.md).
+    chunk_files = sorted(f for f in PROCESSED_CHUNKS_DIR.glob("*_chunks.json")
+                         if f.name != "all_chunks.json")
 
     all_chunks = []
     for cf in chunk_files:

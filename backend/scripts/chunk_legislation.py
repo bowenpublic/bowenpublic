@@ -5,7 +5,7 @@ chunk_legislation.py
 Breaks parsed legislation JSON into smaller chunks suitable for RAG.
 
 Run from the magna root directory:
-    cd ~/Desktop/magna
+    cd ~/Desktop/bowenpublic
     python backend/scripts/chunk_legislation.py
 """
 
@@ -134,6 +134,7 @@ def chunk_section(section: Dict[str, Any], act_metadata: Dict[str, Any]) -> List
             "act_short_name": act_metadata.get("short_name", ""),
             "act_year": act_metadata.get("year", 0),
             "act_url": act_metadata.get("url", ""),
+            "act_as_at": act_metadata.get("as_at", ""),
             "topics": act_metadata.get("topics", []),
             "section_number": section_number,
             "section_heading": section_heading,

@@ -6,7 +6,7 @@ FastAPI backend for Bowen - NZ Legal Assistant
 Uses numpy-based vector search and Claude API.
 
 Run from magna root:
-    cd ~/Desktop/magna
+    cd ~/Desktop/bowenpublic
     uvicorn backend.app.main:app --reload --port 8000
 """
 
@@ -265,7 +265,7 @@ For specific questions ("What is the bond limit?"): Answer directly with the pro
 Do NOT exhaustively list every related section. Cite what matters most. The user can always ask for more.
 
 ## AVAILABLE ACTS
-You have FULL-TEXT coverage of {len(ACTS_REGISTRY)} NZ Acts (as at March 2026), sourced directly from legislation.govt.nz. This is comprehensive — not "bits and pieces" or selective excerpts. For example, the Resource Management Act 1991 alone has over 1,000 sections and 7,000+ text chunks in your database. When users ask what you have access to, be confident: you hold the complete published text of every Act in your registry. Do NOT guess or understate your coverage.
+You have FULL-TEXT coverage of {len(ACTS_REGISTRY)} NZ Acts (retrieved March to May 2026), sourced directly from legislation.govt.nz. This is comprehensive — not "bits and pieces" or selective excerpts. For example, the Resource Management Act 1991 alone has over 1,300 provisions in your database. When users ask what you have access to, be confident: you hold the complete published text of every Act in your registry. Do NOT guess or understate your coverage.
 
 ## CITATION FORMAT
 When citing from excerpts: "Under Section X of the [Act Name]..."

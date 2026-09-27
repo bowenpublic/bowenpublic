@@ -45,7 +45,6 @@ const FALLBACK_LEGISLATION = [
   { title: 'Family Court Act 1980', short_name: 'FCA', topics: ['family court', 'jurisdiction'] },
   { title: 'Coroners Act 2006', short_name: 'CORA', topics: ['inquests', 'death inquiries'] },
   { title: 'Sale of Goods Act 1908', short_name: 'SOGA', topics: ['sale', 'goods', 'contracts'] },
-  { title: 'Education Act 1989', short_name: 'EA', topics: ['schools', 'students', 'curriculum'] },
   { title: 'Constitution Act 1986', short_name: 'CONST', topics: ['parliament', 'sovereignty', 'executive'] },
   { title: 'Electoral Act 1993', short_name: 'ELEC', topics: ['voting', 'elections', 'parliament'] },
   { title: 'Citizenship Act 1977', short_name: 'CITZ', topics: ['citizenship', 'naturalisation'] },
@@ -64,7 +63,7 @@ const FALLBACK_LEGISLATION = [
   { title: 'Freedom Camping Act 2011', short_name: 'FCAM', topics: ['camping', 'vehicles', 'local authority'] },
   { title: 'Health Act 1956', short_name: 'HA', topics: ['public health', 'sanitation', 'disease'] },
   { title: 'Medicines Act 1981', short_name: 'MA', topics: ['medicine', 'pharmacy', 'prescription'] },
-  { title: 'Smokefree Environments Act 1990', short_name: 'SEA', topics: ['smoking', 'tobacco', 'vaping'] },
+  { title: 'Smokefree Environments and Regulated Products Act 1990', short_name: 'SEA', topics: ['smoking', 'tobacco', 'vaping'] },
   { title: 'Civil Defence Emergency Management Act 2002', short_name: 'CDEM', topics: ['civil defence', 'emergency', 'disaster response'] },
   { title: 'Health Practitioners Competence Assurance Act 2003', short_name: 'HPCA', topics: ['health practitioners', 'registration', 'competence'] },
   { title: 'Heritage New Zealand Pouhere Taonga Act 2014', short_name: 'HNZPT', topics: ['heritage', 'historic places', 'archaeology'] },
@@ -106,8 +105,8 @@ const FALLBACK_LEGISLATION = [
 
 // Database stats - acts count derived from FALLBACK_LEGISLATION above
 const DATABASE_STATS = {
-  sections: 219534,
-  chunks: 1361971,
+  sections: 54890,
+  chunks: 63167,
 };
 
 // Placeholder supporters - replace with actual donors

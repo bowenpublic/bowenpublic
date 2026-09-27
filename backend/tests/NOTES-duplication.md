@@ -182,3 +182,67 @@ truncating to `top_k`. On a 12x-duplicated index that lifts the golden set from
 27/55 to 37/55 and restores `/chat` from one source to three. It is a mitigation,
 not a cure: the wasted RAM, disk and search time remain until the data is
 regenerated.
+
+---
+
+## Status, 28 September 2026
+
+Both mechanisms are fixed in the scripts and the data has been regenerated with the
+real pipeline (`parse_legislation.py`, `chunk_legislation.py`,
+`generate_embeddings.py`). Production still pulls the `v1.0-data` release until a
+new release is published.
+
+**What changed in the code**
+
+- `batch_ingest.py`: `rebuild_all_chunks()` skips `all_chunks.json`. Downloads are
+  decoded as UTF-8, and a download is refused if the page is not the Act asked for.
+- `generate_embeddings.py`: drops exact duplicates before embedding, no longer cuts
+  stored text at 1,000 characters, and stores each Act's version date as `as_at`.
+- `parse_legislation.py`: matches `div.prov` exactly, reads the section number from
+  the heading's label, no longer cuts section text at 5,000 characters, labels
+  schedule clauses as `Schedule N cl X`, adds the preamble as its own record,
+  repairs text that was saved with the wrong encoding, builds section links as
+  `whole.html#<id>`, and refuses a file whose content is a different Act from its
+  label.
+
+**Why the parser fix differs from the one proposed above**
+
+The proposed filter (keep a `prov` match only if it has no `prov` parent) would have
+dropped every schedule clause, because those sit inside `div.schedule-provisions`,
+and kept the `schedule-provisions` containers instead. It would also have lost the
+tail of any section over 5,000 characters, which the sub-fragment records had been
+covering.
+
+**Result**
+
+    acts                       196 files  ->  183 verified Acts
+    rows in index              2,619,279  ->  63,167
+    rows with no section no.   about 74%  ->  0.1%
+    embeddings + metadata      about 6 GB ->  167 MB
+    golden, full index         41/55 (old, deduplicated)  ->  42/55
+    golden, 10-act fixture     44/55                      ->  45/55, no losses
+
+Text check (run on the first rebuild, before the 13 files were set aside): 99.8% of
+the old index's text is present in the new one. The rest is text that amendment
+schedules insert into *other* Acts, which the old parser filed under the amending
+Act with no section number. It is left out on purpose.
+
+**Other defects found on the way**
+
+- 11 files contained a different Act from their label, because the download URL is
+  built from a year and number and some numbers were wrong. Three were live in
+  production: "Education Act 1989" (actually the Education Amendment Act 2019),
+  "Water Services Entities Act 2022" (actually the Children's Commissioner Act 2022)
+  and "Retirement Villages Act 2003" (actually the Land Transport (Unauthorised
+  Street and Drag Racing) Amendment Act 2003). All 11 are removed from the index and
+  the registry.
+- 2 Acts were held twice under different file names. One copy of each is kept.
+- 103 files were saved with the wrong text encoding, so macrons and dashes were
+  corrupted. Repaired at parse time.
+- Every section link was a 404. Fixed.
+- 27 Acts had placeholder metadata (made-up title, no link, year 0). Fixed.
+- 7 registry titles were not the Act's real title. Corrected to the title the Act
+  gives itself.
+
+The previous data and the 13 files set aside are kept at
+`~/bowenpublic-data-backup-2026-09-28`.

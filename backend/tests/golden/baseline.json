@@ -1,10 +1,10 @@
 {
-  "note": "Baseline re-recorded 2026-09-02 after C-002 (scored act detection) against backend/tests/fixtures/mini with the result-level dedupe in place (CANDIDATE_MULTIPLIER=12, top_k=6). It was 37/55 at C-001; scored detection took it to 44/55. known_misses are entries retrieval does not yet satisfy; they are xfail in test_golden_retrieval.py so an improvement shows up as XPASS rather than a failure. Entries in expected_pass are a regression lock: they must keep passing. Each known_miss records the act the detector chose, so wrong-act misses can be told apart from wrong-section ones.",
-  "recorded": "2026-09-02",
+  "note": "Baseline re-recorded 2026-09-28 against backend/tests/fixtures/mini rebuilt from the regenerated corpus (duplication fixed at source, parser matching div.prov exactly; see NOTES-duplication.md), CANDIDATE_MULTIPLIER=12, top_k=6. It was 44/55 on the previous fixture. known_misses are entries retrieval does not yet satisfy; they are xfail in test_golden_retrieval.py so an improvement shows up as XPASS rather than a failure. Entries in expected_pass are a regression lock: they must keep passing. Each known_miss records the act the detector chose, so wrong-act misses can be told apart from wrong-section ones.",
+  "recorded": "2026-09-28",
   "top_k": 6,
   "total": 55,
-  "passed": 44,
-  "pass_rate": 0.8,
+  "passed": 45,
+  "pass_rate": 0.818,
   "expected_pass": [
     "What is the maximum bond a landlord can require?",
     "How much notice do I have to give to end a periodic tenancy?",
@@ -41,6 +41,7 @@
     "Do services have to be carried out with reasonable care and skill?",
     "What is the primary duty of care of a PCBU?",
     "Can a worker refuse to carry out work that is unsafe?",
+    "When does a workplace accident have to be notified to the regulator?",
     "What are the duties of a worker at a workplace?",
     "How do I make a request for official information from a government department?",
     "What reasons can an agency give for withholding official information?",
@@ -69,6 +70,18 @@
         [
           "Residential Tenancies Act 1986",
           "19"
+        ],
+        [
+          "Residential Tenancies Act 1986",
+          "20"
+        ],
+        [
+          "Residential Tenancies Act 1986",
+          "22"
+        ],
+        [
+          "Residential Tenancies Act 1986",
+          "66D"
         ]
       ]
     },
@@ -80,15 +93,27 @@
       "got": [
         [
           "Residential Tenancies Act 1986",
-          "12"
+          "66U"
         ],
         [
           "Residential Tenancies Act 1986",
-          "6"
+          "60"
         ],
         [
           "Residential Tenancies Act 1986",
-          "7"
+          "134"
+        ],
+        [
+          "Residential Tenancies Act 1986",
+          "62E"
+        ],
+        [
+          "Residential Tenancies Act 1986",
+          "60AA"
+        ],
+        [
+          "Residential Tenancies Act 1986",
+          "40"
         ]
       ]
     },
@@ -100,15 +125,23 @@
       "got": [
         [
           "Residential Tenancies Act 1986",
-          "10"
-        ],
-        [
-          "Residential Tenancies Act 1986",
           "4"
         ],
         [
           "Residential Tenancies Act 1986",
-          "21"
+          "78A"
+        ],
+        [
+          "Residential Tenancies Act 1986",
+          "6"
+        ],
+        [
+          "Residential Tenancies Act 1986",
+          "Schedule 1AA cl 21"
+        ],
+        [
+          "Residential Tenancies Act 1986",
+          "Schedule 1AA cl 10"
         ]
       ]
     },
@@ -136,6 +169,18 @@
         [
           "Crimes Act 1961",
           "54"
+        ],
+        [
+          "Crimes Act 1961",
+          "7"
+        ],
+        [
+          "Crimes Act 1961",
+          "78B"
+        ],
+        [
+          "Crimes Act 1961",
+          "315"
         ]
       ]
     },
@@ -151,11 +196,19 @@
         ],
         [
           "Employment Relations Act 2000",
-          ""
+          "69OC"
         ],
         [
           "Employment Relations Act 2000",
-          "69OC"
+          "69K"
+        ],
+        [
+          "Employment Relations Act 2000",
+          "69E"
+        ],
+        [
+          "Employment Relations Act 2000",
+          "69C"
         ]
       ]
     },
@@ -176,6 +229,18 @@
         [
           "Consumer Guarantees Act 1993",
           "36"
+        ],
+        [
+          "Fair Trading Act 1986",
+          "44"
+        ],
+        [
+          "Fair Trading Act 1986",
+          "30A"
+        ],
+        [
+          "Fair Trading Act 1986",
+          "13"
         ]
       ]
     },
@@ -196,6 +261,18 @@
         [
           "Consumer Guarantees Act 1993",
           "26"
+        ],
+        [
+          "Consumer Guarantees Act 1993",
+          "24"
+        ],
+        [
+          "Consumer Guarantees Act 1993",
+          "27"
+        ],
+        [
+          "Consumer Guarantees Act 1993",
+          "33"
         ]
       ]
     },
@@ -207,35 +284,23 @@
       "got": [
         [
           "Health and Safety at Work Act 2015",
-          "20"
-        ],
-        [
-          "Health and Safety at Work Act 2015",
-          "10"
-        ],
-        [
-          "Health and Safety at Work Act 2015",
           "45"
-        ]
-      ]
-    },
-    {
-      "question": "When does a workplace accident have to be notified to the regulator?",
-      "act": "Health and Safety at Work Act 2015",
-      "section": "56",
-      "detected_act": null,
-      "got": [
-        [
-          "Health and Safety at Work Act 2015",
-          "200"
         ],
         [
           "Health and Safety at Work Act 2015",
-          "119"
+          "46"
         ],
         [
           "Health and Safety at Work Act 2015",
-          "198"
+          "Schedule 2 cl 20"
+        ],
+        [
+          "Health and Safety at Work Act 2015",
+          "183"
+        ],
+        [
+          "Health and Safety at Work Act 2015",
+          "211"
         ]
       ]
     },
@@ -256,13 +321,25 @@
         [
           "Crimes Act 1961",
           "245"
+        ],
+        [
+          "Crimes Act 1961",
+          "6"
+        ],
+        [
+          "Crimes Act 1961",
+          "78AAA"
+        ],
+        [
+          "Crimes Act 1961",
+          "7"
         ]
       ]
     }
   ],
   "previous": {
-    "commission": "C-001",
-    "passed": 37,
+    "commission": "C-002",
+    "passed": 44,
     "total": 55
   }
 }

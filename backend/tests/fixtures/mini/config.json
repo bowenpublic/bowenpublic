@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-09-02T13:36:30.007412",
+  "generated_at": "2026-09-28T07:26:28.573353",
   "embedding_model": "all-MiniLM-L6-v2",
-  "total_chunks": 10790,
+  "total_chunks": 2937,
   "embedding_dimension": 384,
   "embeddings_file": "embeddings.npy",
   "metadata_file": "metadata.json",
   "fixture": true,
-  "source_embeddings": "/Users/joedaviesio/Desktop/magna/data/embeddings/embeddings.npy",
-  "source_metadata": "/Users/joedaviesio/Desktop/magna/data/embeddings/metadata.json",
-  "source_rows": 2619279,
+  "source_embeddings": "data/embeddings/embeddings.npy",
+  "source_metadata": "data/embeddings/metadata.json",
+  "source_rows": 63167,
   "acts": [
     "Constitution Act 1986",
     "Consumer Guarantees Act 1993",
@@ -22,16 +22,16 @@
     "Residential Tenancies Act 1986"
   ],
   "rows_per_act": {
-    "Constitution Act 1986": 123,
-    "Consumer Guarantees Act 1993": 263,
-    "Crimes Act 1961": 1699,
-    "Employment Relations Act 2000": 2929,
-    "Fair Trading Act 1986": 838,
-    "Health and Safety at Work Act 2015": 1463,
-    "Official Information Act 1982": 272,
-    "Privacy Act 2020": 1068,
-    "Residential Tenancies Act 1986": 2051,
-    "New Zealand Bill of Rights Act 1990": 84
+    "Constitution Act 1986": 34,
+    "Consumer Guarantees Act 1993": 74,
+    "Crimes Act 1961": 641,
+    "Employment Relations Act 2000": 734,
+    "Fair Trading Act 1986": 211,
+    "Health and Safety at Work Act 2015": 369,
+    "New Zealand Bill of Rights Act 1990": 31,
+    "Official Information Act 1982": 85,
+    "Privacy Act 2020": 271,
+    "Residential Tenancies Act 1986": 487
   },
   "deduplicated_on": [
     "act_title",

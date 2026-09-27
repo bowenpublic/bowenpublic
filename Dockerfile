@@ -16,11 +16,11 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 COPY backend/ ./backend/
 
 # Create embeddings directory and download from GitHub Release
-ARG DATA_VERSION=v0.3.1
+ARG DATA_RELEASE=v1.1-data
 RUN mkdir -p data/embeddings
-RUN curl -fL -o data/embeddings/embeddings.npy https://github.com/bowenpublic/bowenpublic/releases/download/v1.0-data/embeddings.npy
-RUN curl -fL -o data/embeddings/metadata.json https://github.com/bowenpublic/bowenpublic/releases/download/v1.0-data/metadata.json
-RUN curl -fL -o data/embeddings/config.json https://github.com/bowenpublic/bowenpublic/releases/download/v1.0-data/config.json
+RUN curl -fL -o data/embeddings/embeddings.npy https://github.com/bowenpublic/bowenpublic/releases/download/${DATA_RELEASE}/embeddings.npy
+RUN curl -fL -o data/embeddings/metadata.json https://github.com/bowenpublic/bowenpublic/releases/download/${DATA_RELEASE}/metadata.json
+RUN curl -fL -o data/embeddings/config.json https://github.com/bowenpublic/bowenpublic/releases/download/${DATA_RELEASE}/config.json
 
 # Expose port
 EXPOSE 8000

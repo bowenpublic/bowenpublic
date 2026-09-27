@@ -6,7 +6,7 @@ Generates vector embeddings for legislation chunks.
 Uses simple JSON storage (no ChromaDB) for Python 3.14 compatibility.
 
 Run from the magna root directory:
-    cd ~/Desktop/magna
+    cd ~/Desktop/bowenpublic
     python backend/scripts/generate_embeddings.py
 """
 
@@ -53,7 +53,17 @@ def main():
     with open(chunks_path, 'r', encoding='utf-8') as f:
         chunks = json.load(f)
     print(f"Loaded {len(chunks):,} chunks")
-    
+
+    # Drop exact duplicates so no pipeline bug can put them in the index.
+    # Same key as the runtime dedupe in search_similar().
+    chunks = list({
+        (c.get("metadata", {}).get("act_title", ""),
+         c.get("metadata", {}).get("section_number", ""),
+         c.get("text", "")): c
+        for c in chunks
+    }.values())
+    print(f"After dedupe: {len(chunks):,} chunks")
+
     # Initialize embedding model
     print(f"\nLoading embedding model: {EMBEDDING_MODEL}")
     print("(This may take a moment on first run...)")
@@ -92,22 +102,23 @@ def main():
     print(f"\nSaving embeddings to {embeddings_path}...")
     np.save(embeddings_path, embeddings)
     
-    # Save chunk metadata (without the full text to save space)
+    # Save chunk metadata
     metadata_path = EMBEDDINGS_DIR / "metadata.json"
     print(f"Saving metadata to {metadata_path}...")
-    
+
     metadata_list = []
     for i, chunk in enumerate(chunks):
         meta = chunk.get("metadata", {})
         metadata_list.append({
             "id": chunk.get("id", str(i)),
-            "text": chunk.get("text", "")[:1000],  # Truncate for storage
+            "text": chunk.get("text", ""),  # Full chunk: a cut-off would drop statute text
             "act_title": meta.get("act_title", ""),
             "act_short_name": meta.get("act_short_name", ""),
             "section_number": meta.get("section_number", ""),
             "section_heading": meta.get("section_heading", ""),
             "section_url": meta.get("section_url", ""),
-            "act_url": meta.get("act_url", "")
+            "act_url": meta.get("act_url", ""),
+            "as_at": meta.get("act_as_at", "")
         })
     
     with open(metadata_path, 'w', encoding='utf-8') as f:
