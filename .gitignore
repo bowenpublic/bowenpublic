@@ -15,11 +15,10 @@ out/
 
 # Data (large files)
 data/raw/*.xml
-data/embeddings/*.pkl
-# embeddings tracked via Git LFS (see .gitattributes)
-# data/embeddings/embeddings.npy
-# data/embeddings/metadata.json
-data/processed/chunks/all_chunks.json
+# Raw HTML in data/raw/html is the source and is tracked (Git LFS).
+# Everything built from it is not: see data/README.md.
+data/processed/
+data/embeddings/
 
 # IDE
 .vscode/
@@ -37,8 +36,13 @@ Thumbs.db
 # Style guide (portable, not project code)
 STYLE_GUIDE.md
 
+# Internal coordination docs (repo is public; these stay local — see ~/hq)
+DIRECTOR-BRIEFING.md
+RESUME-EXPANSION.md
+
 # Local logs
 logsweek1
 logs/
 backend/logs/
 .gstack/
+DIRECTOR-LOG.md

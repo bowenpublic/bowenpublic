@@ -36,8 +36,8 @@ Checked against the code on 28 September 2026.
   per-section pages. The only pages are home, about, donate, data policy and Te Tiriti
 - Search still loops over every row in Python on each query. At 63,167 rows that
   takes 55 to 90 ms locally
-- 11 Acts were removed because the downloaded file held a different Act. They need
-  downloading again from the right address before they can come back
+- 11 Acts were removed because the downloaded file held a different Act. Replacing
+  them is a side quest, set out below
 
 ## Principles
 
@@ -85,13 +85,6 @@ is pointed at Bowen.
 - Status: the index has it for every row. Still to do: return it from
   `search_similar()` and the search endpoint. Note the oldest version held is from
   2013, and 35 Acts are on versions from 2022 or earlier
-
-**0.2a Re-download the 11 removed Acts**
-- What: find the right address for each, download, and let the new title check
-  confirm the page is the Act asked for
-- Note: two of them, the Education Act 1989 and the Water Services Entities Act
-  2022, have been repealed, so they should stay out. Three of the labels may not be
-  real Acts at all and need checking against legislation.govt.nz
 
 **0.3 Explicit coverage answers**
 - What: a response shape for "not covered" and "no confident match", separate from an
@@ -195,6 +188,85 @@ Only after Phase 1 is stable and coverage is wide enough to stand behind.
 - Submit to the Claude connectors directory and the ChatGPT apps directory
 - A Bowen custom GPT that wraps the REST API, as a shop window
 - A post on the launch, through the channels in the trust repo's media register
+
+## Side quest: replace the removed Acts
+
+Not on the path to the MCP server, so it can be done at any point. Eleven Acts were
+removed on 28 September 2026 because the downloaded file held a different Act. The
+download address is built from a year and a number, and the number was wrong.
+
+**How to do each one**
+- Find the Act on legislation.govt.nz and note its year and number
+- Correct the entry in `data/expansion-manifest.json`
+- Run the batch ingest for it. The downloader now refuses the page if its title is
+  not the Act asked for, so a wrong number fails loudly instead of being indexed
+- Add the registry entry with specific keywords, then regenerate the index and
+  publish a new data release
+
+**Done when:** each Act below is either back in the index under its real title, or
+recorded here as not to be added, with the reason.
+
+### Were live in production
+
+**Retirement Villages Act 2003**
+- File held: Land Transport (Unauthorised Street and Drag Racing) Amendment Act 2003
+- Action: replace. The one users are most likely to look for
+
+**Education Act 1989**
+- File held: Education Amendment Act 2019
+- Action: leave out. Repealed and replaced by the Education and Training Act 2020,
+  which is already in the index
+
+**Water Services Entities Act 2022**
+- File held: Children's Commissioner Act 2022
+- Action: leave out. Repealed
+
+### Expansion Acts that never reached production
+
+**Moriori Claims Settlement Act 2021**
+- File held: Education and Training (Teaching Council Fees, Levies, and Costs)
+  Amendment Act 2021
+- Action: replace
+
+**Ngati Rangitihi Claims Settlement Act 2022**
+- File held: Three Strikes Legislation Repeal Act 2022
+- Action: replace
+
+**Unit Titles (Strengthening Body Corporate Governance) Amendment Act 2022**
+- File held: Appropriation (2021/22 Supplementary Estimates) Act 2022
+- Action: check the exact title, then decide. It is an amendment Act, and the
+  Unit Titles Act 2010 is already in the index
+
+**Bay of Plenty Regional Council (Maori Constituency Empowering) Act 2001**
+- File held: Ministry of Energy (Abolition) Amendment Act 2001
+- Action: replace. It is a local Act, so its address starts `/act/local/`
+
+**Pare Hauraki Collective Redress Act 2018**
+- File held: Criminal Records (Expungement of Convictions for Historical Homosexual
+  Offences) Act 2018
+- Action: check it exists as an Act before doing anything
+
+**Sanctions Act 2017**
+- File held: Private International Law (Choice of Law in Tort) Act 2017
+- Action: check it exists as an Act before doing anything
+
+**Tamaki Makaurau Settlement Process Act 2008**
+- File held: Employment Relations (Breaks, Infant Feeding, and Other Matters)
+  Amendment Act 2008
+- Action: check it exists as an Act before doing anything
+
+**Waikato-Tainui Raupatu Claims Settlement (Waikato River, Loss of Claim) Act 2021**
+- File held: Taxation (COVID-19 Support Payments and Working for Families Tax
+  Credits) Act 2021
+- Action: check it exists as an Act before doing anything
+
+### While in there
+
+- The set-aside files are in `~/bowenpublic-data-backup-2026-09-28/excluded-html/`
+- Six amendment Acts are in the index. They hold text as enacted, which can differ
+  from the current principal Act. Decide whether they stay
+- 35 Acts are on versions from 2022 or earlier. A refresh of the whole corpus would
+  fix that and could be done in the same pass
 
 ## Measurement
 
