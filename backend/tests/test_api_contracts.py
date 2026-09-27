@@ -337,3 +337,67 @@ def test_debug_search_available_when_debug_enabled(client, app_module, monkeypat
 def test_admin_requires_token(client, path):
     assert client.get(path).status_code == 422          # token param missing
     assert client.get(path, params={"token": "wrong"}).status_code == 401
+
+
+# --- query log carries no network identifier ---------------------------------
+
+@pytest.fixture
+def log_dir(app_module, monkeypatch, tmp_path):
+    monkeypatch.setattr(app_module, "LOGS_DIR", tmp_path)
+    monkeypatch.setattr(app_module, "ADMIN_TOKEN", "test-admin-token")
+    return tmp_path
+
+
+def read_log(log_dir):
+    path = log_dir / "queries.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def test_chat_log_has_no_ip(client, log_dir):
+    client.post("/chat", json={"message": DEMO_QUESTION, "session_id": "test-log-chat"},
+                headers={"X-Forwarded-For": "203.0.113.7, 10.0.0.1"})
+    entries = read_log(log_dir)
+    assert len(entries) == 1
+    assert set(entries[0]) == {"timestamp", "session_id", "query", "response",
+                               "detected_act", "sources_count", "response_time_ms"}
+    assert "203.0.113.7" not in json.dumps(entries[0])
+
+
+def test_chat_stream_log_has_no_ip(client, log_dir):
+    client.post("/chat/stream", json={"message": DEMO_QUESTION, "session_id": "test-log-stream"},
+                headers={"X-Forwarded-For": "203.0.113.7"})
+    entries = read_log(log_dir)
+    assert len(entries) == 1
+    assert "ip" not in entries[0]
+    assert "203.0.113.7" not in json.dumps(entries[0])
+
+
+def test_admin_logs_strips_legacy_ip(client, log_dir):
+    legacy = {"timestamp": "2026-03-02T01:00:00Z", "session_id": "s1", "ip": "203.0.113.7",
+              "query": "q", "response": "r", "detected_act": None,
+              "sources_count": 0, "response_time_ms": 1}
+    (log_dir / "queries.jsonl").write_text(json.dumps(legacy) + "\n")
+    body = client.get("/admin/logs", params={"token": "test-admin-token"}).json()
+    assert body["total"] == 1
+    assert "ip" not in body["entries"][0]
+
+
+def test_admin_stats_by_month(client, log_dir):
+    rows = [
+        {"timestamp": "2026-03-02T01:00:00Z", "session_id": "s1", "detected_act": "Residential Tenancies Act 1986"},
+        {"timestamp": "2026-03-09T01:00:00Z", "session_id": "s1", "detected_act": "Residential Tenancies Act 1986"},
+        {"timestamp": "2026-03-10T01:00:00Z", "session_id": "s2", "detected_act": None},
+        {"timestamp": "2026-04-01T01:00:00Z", "session_id": "s2", "detected_act": None},
+    ]
+    (log_dir / "queries.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    body = client.get("/admin/stats", params={"token": "test-admin-token"}).json()
+    assert set(body) == {"total_queries", "total_sessions", "top_acts", "by_month"}
+    assert body["total_queries"] == 4
+    assert body["total_sessions"] == 2
+    assert body["by_month"] == {"2026-03": {"queries": 3, "sessions": 2},
+                                "2026-04": {"queries": 1, "sessions": 1}}
+
+
+def test_admin_stats_empty(client, log_dir):
+    body = client.get("/admin/stats", params={"token": "test-admin-token"}).json()
+    assert body == {"total_queries": 0, "total_sessions": 0, "top_acts": {}, "by_month": {}}
