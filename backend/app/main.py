@@ -793,19 +793,17 @@ def _store_history(session_id: str, query: str, response_text: str):
 
 def log_query(
     session_id: str,
-    ip: str,
     query: str,
     response: str,
     detected_act: str,
     sources_count: int,
     response_time_ms: int
 ):
-    """Log query to JSON file."""
+    """Log query to JSON file. No IP address or other network identifier is recorded."""
     try:
         log_entry = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "session_id": session_id,
-            "ip": ip,
             "query": query,
             "response": response,
             "detected_act": detected_act,
@@ -858,7 +856,9 @@ async def get_logs(token: str = Query(..., description="Admin token")):
     with open(log_file, "r") as f:
         for line in f:
             if line.strip():
-                entries.append(json.loads(line))
+                entry = json.loads(line)
+                entry.pop("ip", None)  # older entries carry one
+                entries.append(entry)
 
     return {
         "total": len(entries),
@@ -874,7 +874,7 @@ async def get_stats(token: str = Query(..., description="Admin token")):
 
     log_file = LOGS_DIR / "queries.jsonl"
     if not log_file.exists():
-        return {"total_queries": 0, "top_acts": {}}
+        return {"total_queries": 0, "total_sessions": 0, "top_acts": {}, "by_month": {}}
 
     entries = []
     with open(log_file, "r") as f:
@@ -891,9 +891,27 @@ async def get_stats(token: str = Query(..., description="Admin token")):
     # Sort by count
     top_acts = dict(sorted(act_counts.items(), key=lambda x: x[1], reverse=True)[:10])
 
+    # Counts by month (UTC, from the entry timestamp). Aggregates only.
+    month_queries = {}
+    month_sessions = {}
+    all_sessions = set()
+    for e in entries:
+        month = (e.get("timestamp") or "")[:7] or "unknown"
+        month_queries[month] = month_queries.get(month, 0) + 1
+        sid = e.get("session_id")
+        if sid:
+            month_sessions.setdefault(month, set()).add(sid)
+            all_sessions.add(sid)
+    by_month = {
+        m: {"queries": month_queries[m], "sessions": len(month_sessions.get(m, ()))}
+        for m in sorted(month_queries)
+    }
+
     return {
         "total_queries": len(entries),
-        "top_acts": top_acts
+        "total_sessions": len(all_sessions),
+        "top_acts": top_acts,
+        "by_month": by_month
     }
 
 
@@ -1139,13 +1157,8 @@ async def chat(request: ChatRequest, req: Request):
     response_time_ms = int((time.time() - start_time) * 1000)
 
     # Log query to JSON file
-    client_ip = req.headers.get("X-Forwarded-For", req.client.host if req.client else "unknown")
-    if "," in client_ip:
-        client_ip = client_ip.split(",")[0].strip()  # Get first IP if multiple
-
     log_query(
         session_id=session_id,
-        ip=client_ip,
         query=query,
         response=response_text,
         detected_act=detected_act,
@@ -1263,11 +1276,8 @@ async def chat_stream(request: ChatRequest, req: Request):
             # Log after stream completes
             response_time_ms = int((time.time() - start_time) * 1000)
             response_text = "".join(full_text)
-            client_ip = req.headers.get("X-Forwarded-For", req.client.host if req.client else "unknown")
-            if "," in client_ip:
-                client_ip = client_ip.split(",")[0].strip()
             log_query(
-                session_id=session_id, ip=client_ip, query=query,
+                session_id=session_id, query=query,
                 response=response_text, detected_act=detected_act,
                 sources_count=len(sources), response_time_ms=response_time_ms,
             )
