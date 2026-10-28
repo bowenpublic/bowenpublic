@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { AlertCircle, BookOpen } from 'lucide-react';
-import { ManatIcon } from './ManatIcon';
 import { KiwiIcon } from './KiwiIcon';
 import { useChat } from '@/hooks/useChat';
 import { ChatMessage } from './ChatMessage';
@@ -177,9 +177,14 @@ export function Chat() {
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-sm border-b border-slate-200">
         <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-            <div className="w-10 h-10 bg-white border border-slate-200 rounded-lg flex items-center justify-center shadow-md">
-              <ManatIcon className="w-5 h-5 text-black" />
-            </div>
+            <Image
+              src="/logo-mark.png"
+              alt="Bowen Public logo"
+              width={40}
+              height={40}
+              priority
+              className="w-10 h-10"
+            />
             <div>
               <h1 className="bowen-brand text-xl tracking-wide">
                 <span style={{color: '#5d78c5'}}>B</span>
@@ -205,8 +210,14 @@ export function Chat() {
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
             <div className="flex items-center gap-3 mb-6">
-            <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center">
-                <ManatIcon className="w-8 h-8 text-primary" />
+              <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center">
+                <Image
+                  src="/logo-mark.png"
+                  alt="Bowen Public logo"
+                  width={40}
+                  height={40}
+                  className="w-10 h-10"
+                />
               </div>
               <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center">
                 <KiwiIcon className="w-8 h-8 text-primary" />

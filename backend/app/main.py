@@ -114,7 +114,7 @@ class ChatResponse(BaseModel):
     disclaimer: str
 
 # API Version
-API_VERSION = "1.0.7"
+API_VERSION = "1.0.8"
 
 # Initialize FastAPI
 app = FastAPI(
@@ -1403,10 +1403,29 @@ except Exception as e:
     print(f"[BOOT] Stripe import FAILED: {e}", flush=True)
     stripe = None
 
-if stripe:
-    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")
+# Public site URL used for Checkout success/cancel redirects. Falls back to the
+# request Origin (if it is an allowed CORS origin), then the local dev frontend.
+FRONTEND_URL = os.getenv("FRONTEND_URL", "").rstrip("/")
+if stripe and STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
+    print(f"[BOOT] Stripe configured ({'live' if STRIPE_SECRET_KEY.startswith('sk_live_') else 'test'} mode)", flush=True)
+else:
+    print("[BOOT] Stripe NOT configured — STRIPE_SECRET_KEY missing; donations disabled", flush=True)
+
+
+def _stripe_ready() -> bool:
+    return bool(stripe and STRIPE_SECRET_KEY)
+
+
+def _frontend_base(request: Request) -> str:
+    if FRONTEND_URL:
+        return FRONTEND_URL
+    origin = request.headers.get("origin", "").rstrip("/")
+    if origin and origin in CORS_ORIGINS:
+        return origin
+    return "http://localhost:3005"
 
 class DonateRequest(BaseModel):
     amount: int = Field(..., ge=1, le=10000, description="Donation amount in NZD")
@@ -1414,7 +1433,9 @@ class DonateRequest(BaseModel):
 @app.post("/api/donate/checkout")
 async def create_checkout_session(req: DonateRequest, request: Request):
     """Create a Stripe Checkout Session for a one-time donation."""
-    origin = request.headers.get("origin", "http://localhost:3005")
+    if not _stripe_ready():
+        raise HTTPException(status_code=503, detail="Donations are not configured on this server")
+    base = _frontend_base(request)
     try:
         session = stripe.checkout.Session.create(
             mode="payment",
@@ -1429,29 +1450,39 @@ async def create_checkout_session(req: DonateRequest, request: Request):
                 },
                 "quantity": 1,
             }],
-            success_url=f"{origin}/donate?success=true",
-            cancel_url=f"{origin}/donate",
+            submit_type="donate",
+            metadata={"source": "bowenpublic-donate-page", "amount_nzd": str(req.amount)},
+            success_url=f"{base}/donate?success=true",
+            cancel_url=f"{base}/donate",
         )
         return {"url": session.url}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except stripe.StripeError as e:
+        print(f"[DONATION] Checkout session creation failed: {e}", flush=True)
+        raise HTTPException(status_code=502, detail="Payment provider error; please try again")
 
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
     """Handle Stripe webhook events."""
+    if not _stripe_ready() or not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Stripe webhooks are not configured on this server")
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError:
+    except stripe.SignatureVerificationError:
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        amount = session.get("amount_total", 0) / 100
-        print(f"[DONATION] ${amount:.2f} NZD received — session {session['id']}")
+    # construct_event has verified the signature; stripe-python v8+ StripeObjects
+    # lack dict .get(), so read the verified raw payload as a plain dict.
+    data = json.loads(payload)
+    if data.get("type") == "checkout.session.completed":
+        session = data["data"]["object"]
+        amount = (session.get("amount_total") or 0) / 100
+        currency = (session.get("currency") or "nzd").upper()
+        print(f"[DONATION] {amount:.2f} {currency} received — session {session.get('id')} "
+              f"(livemode={data.get('livemode')})", flush=True)
 
     return {"status": "ok"}
 

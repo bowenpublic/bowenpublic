@@ -46,3 +46,6 @@ logs/
 backend/logs/
 .gstack/
 DIRECTOR-LOG.md
+
+# Brand assets served by the frontend
+!frontend/public/*.png
