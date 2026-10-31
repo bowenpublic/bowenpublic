@@ -52,6 +52,9 @@ KEY_SECTIONS = {
     "flatmates": [
         ("rta", ["10A", "10B"]),
     ],
+    "flatmate": [
+        ("rta", ["10A", "10B"]),
+    ],
     
     # === EMPLOYMENT ===
     # ERA = Employment Relations Act, HA = Holidays Act (not in current corpus)
@@ -242,6 +245,57 @@ KEY_SECTIONS = {
     "easement": [
         ("pla", ["289", "290", "291", "292", "293", "294", "295", "296", "297", "298"]),
     ],
+
+    # === TESTING GATE (2026-11-01): everyday wording ===
+    # Act identifiers here are lower-case fragments of the full act_title, not
+    # short names: should_boost_section() substring-matches, and a short id like
+    # "lea" or "ssa" would also match unrelated titles.
+    "picture hooks": [
+        ("rta", ["42A", "42B"]),
+    ],
+    "minor changes": [
+        ("rta", ["42A", "42B"]),
+    ],
+    "quiet enjoyment": [
+        ("rta", ["38"]),
+    ],
+    "stand for council": [
+        ("local electoral act", ["25", "26", "55", "58"]),
+    ],
+    "nominated": [
+        ("local electoral act", ["25", "26", "55", "58"]),
+    ],
+    "nomination": [
+        ("local electoral act", ["25", "26", "55", "58"]),
+    ],
+    "passcode": [
+        ("search and surveillance act", ["130", "178", "88"]),
+    ],
+    "password": [
+        ("search and surveillance act", ["130", "178", "88"]),
+    ],
+    "search my phone": [
+        ("search and surveillance act", ["130", "178", "88"]),
+    ],
+    "access information": [
+        ("search and surveillance act", ["130", "178", "88"]),
+    ],
+    "record a phone call": [
+        ("crimes act 1961", ["216B"]),
+    ],
+    "record phone": [
+        ("crimes act 1961", ["216B"]),
+    ],
+    "recording a call": [
+        ("crimes act 1961", ["216B"]),
+    ],
+    "intercept": [
+        ("crimes act 1961", ["216B"]),
+    ],
+    "intimate": [
+        ("harmful digital communications act", ["22A"]),
+        ("crimes act 1961", ["216G", "216H", "216I", "216J"]),
+    ],
 }
 
 
@@ -250,7 +304,8 @@ def get_key_sections_for_query(query: str) -> list:
     Returns a list of (act_identifier, section_numbers) tuples
     for sections that should be boosted for this query.
     """
-    query_lower = query.lower()
+    # "90-day trial" must match the topic "90 day trial".
+    query_lower = query.lower().replace("-", " ")
     matched_sections = []
     
     for topic, act_sections in KEY_SECTIONS.items():

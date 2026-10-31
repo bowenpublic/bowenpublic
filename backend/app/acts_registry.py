@@ -38,7 +38,7 @@ ACTS_REGISTRY: Dict[str, Dict] = {
         "title": "Consumer Guarantees Act 1993",
         "short_name": "CGA",
         "year": 1993,
-        "keywords": ["cga", "consumer guarantees", "consumer", "refund", "repair", "guarantee"],
+        "keywords": ["cga", "consumer guarantees", "consumer", "refund", "repair", "guarantee", "goods"],
         "topics": ["refunds", "repairs", "guarantees"],
         "url": "https://www.legislation.govt.nz/act/public/1993/0091/latest/DLM311053.html"
     },
@@ -248,7 +248,8 @@ ACTS_REGISTRY: Dict[str, Dict] = {
         "year": 1908,
         "keywords": ["sale of goods", "goods", "buyer", "seller"],
         "topics": ["sale", "goods", "contracts"],
-        "url": "https://www.legislation.govt.nz/act/public/1908/0168/latest/DLM173958.html"
+        "url": "https://www.legislation.govt.nz/act/public/1908/0168/latest/DLM173958.html",
+        "repealed": True,
     },
     "CONST": {
         "title": "Constitution Act 1986",
@@ -344,7 +345,8 @@ ACTS_REGISTRY: Dict[str, Dict] = {
         "year": 1947,
         "keywords": ["district court", "district courts"],
         "topics": ["district court", "jurisdiction"],
-        "url": "https://www.legislation.govt.nz/act/public/1947/0016/latest/DLM242776.html"
+        "url": "https://www.legislation.govt.nz/act/public/1947/0016/latest/DLM242776.html",
+        "repealed": True,
     },
     "BSA": {
         "title": "Biosecurity Act 1993",
@@ -440,7 +442,12 @@ ACTS_REGISTRY: Dict[str, Dict] = {
         "year": 1974,
         "keywords": ["local government 1974", "roads", "drainage", "public works"],
         "topics": ["local government", "roads", "public works"],
-        "url": "https://www.legislation.govt.nz/act/public/1974/0066/latest/DLM415532.html"
+        "url": "https://www.legislation.govt.nz/act/public/1974/0066/latest/DLM415532.html",
+        "partially_repealed": True,
+        "status_note": (
+            "Most of this Act is repealed; the Local Government Act 2002 is the "
+            "main Act. These sections are still in force."
+        ),
     },
     "LGACA": {
         "title": "Local Government (Auckland Council) Act 2009",
@@ -520,7 +527,8 @@ ACTS_REGISTRY: Dict[str, Dict] = {
         "year": 1993,
         "keywords": ["privacy 1993", "old privacy act", "information privacy"],
         "topics": ["privacy", "personal information", "data protection"],
-        "url": "https://www.legislation.govt.nz/act/public/1993/0028/latest/DLM296639.html"
+        "url": "https://www.legislation.govt.nz/act/public/1993/0028/latest/DLM296639.html",
+        "repealed": True,
     },
     "RRA": {
         "title": "Rates Rebate Act 1973",
@@ -630,7 +638,7 @@ ACTS_REGISTRY: Dict[str, Dict] = {
         "title": "Criminal Procedure Act 2011",
         "short_name": "CPA",
         "year": 2011,
-        "keywords": ["criminal procedure", "criminal procedure act", "charge", "plea", "trial", "jury trial", "prosecution", "judge-alone trial"],
+        "keywords": ["criminal procedure", "criminal procedure act", "charge", "plea", "jury trial", "judge-alone trial", "criminal trial", "prosecution"],
         "topics": ["criminal procedure", "trials", "charges"],
         "url": "https://www.legislation.govt.nz/act/public/2011/0081/latest/DLM3359902.html"
     },
@@ -1525,7 +1533,8 @@ _WEAK_KEYWORDS = frozenset({
     "defence",     # Defence Act — collides with the defence of self-defence
     "company",     # Companies Act — any business question mentions a company
     "consumer",    # Consumer Guarantees — collides with Fair Trading
-    "goods",       # Sale of Goods — collides with Consumer Guarantees / FTA
+    "goods",       # Consumer Guarantees (formerly the repealed Sale of Goods Act) —
+                   # collides with Fair Trading / Contract and Commercial Law
     "contract",    # Contract and Commercial Law — every area of law has contracts
     "contracts",
     "seizure",     # Search and Surveillance — collides with NZBORA s21
@@ -1537,6 +1546,8 @@ _WEAK_KEYWORDS = frozenset({
                    # often privacy, health and safety, or tax
     "government agency",  # Public Service — names the actor in any question
                           # about dealing with government
+    "council",     # Local Government 2002 — "stand for council" is the Local
+                   # Electoral Act; "council" names the body, not the subject
 })
 
 
@@ -1549,6 +1560,12 @@ def _build_keyword_index():
     """Precompile every keyword pattern once, at import."""
     index = []
     for short_name, act_info in ACTS_REGISTRY.items():
+        # A wholly repealed Act is never a detection target and never a legal
+        # signal: its rows are dropped from the index at load, so filtering to
+        # it would return nothing, and its keywords ("goods", "buyer",
+        # "seller", "district court") would pull questions towards dead law.
+        if act_info.get("repealed"):
+            continue
         entries = []
         for kw in act_info["keywords"]:
             kw_lower = kw.lower()
@@ -1641,7 +1658,7 @@ def detect_act_from_query(query: str) -> Optional[str]:
 
 
 def get_all_acts() -> List[Dict]:
-    """Get all acts as a list for the API."""
+    """Get all in-force acts as a list for the API (wholly repealed Acts excluded)."""
     return [
         {
             "short_name": short_name,
@@ -1651,7 +1668,76 @@ def get_all_acts() -> List[Dict]:
             "url": info["url"]
         }
         for short_name, info in ACTS_REGISTRY.items()
+        if not info.get("repealed")
     ]
+
+
+def count_in_force_acts() -> int:
+    """Distinct titles of the Acts Bowen holds that are not wholly repealed."""
+    return len({info["title"] for info in ACTS_REGISTRY.values() if not info.get("repealed")})
+
+
+# =============================================================================
+# Repealed Acts
+# =============================================================================
+# Wholly repealed Acts that are still in the v1.1 data release. Their rows are
+# dropped from the index at load (main.drop_repealed_rows), they are excluded
+# from detection and from /acts, and a question that names one gets a note in
+# the model's context pointing at the replacement. Dates are from the repeal
+# notices on legislation.govt.nz (see docs/2026-11-01-testing-gate-findings.md).
+REPEALED_ACTS: Dict[str, Dict] = {
+    "Privacy Act 1993": {
+        "repealed_on": "1 December 2020",
+        "replaced_by": "Privacy Act 2020",
+        "replaced_by_url": "https://www.legislation.govt.nz/act/public/2020/0031/latest/LMS23223.html",
+        "mentions": ["privacy act 1993", "1993 privacy act", "privacy act of 1993", "old privacy act"],
+    },
+    "District Courts Act 1947": {
+        "repealed_on": "1 January 2018",
+        "replaced_by": "District Court Act 2016",
+        "replaced_by_url": "https://www.legislation.govt.nz/act/public/2016/0049/latest/DLM1.html",
+        "mentions": ["district courts act 1947", "district courts act", "1947 district courts act"],
+    },
+    "Sale of Goods Act 1908": {
+        "repealed_on": "1 September 2017",
+        "replaced_by": "Contract and Commercial Law Act 2017",
+        "replaced_by_url": "https://www.legislation.govt.nz/act/public/2017/0005/latest/DLM6844033.html",
+        "mentions": ["sale of goods act", "sale of goods 1908"],
+    },
+}
+
+REPEALED_TITLES = frozenset(REPEALED_ACTS)
+
+# Partly in force: kept in the index, but its excerpts carry a status note so
+# the model does not present it as the general statute.
+PARTIALLY_REPEALED_ACTS: Dict[str, str] = {
+    info["title"]: info["status_note"]
+    for info in ACTS_REGISTRY.values()
+    if info.get("partially_repealed")
+}
+
+_REPEALED_MENTION_PATTERNS = [
+    (title, re.compile(r"\b(?:" + "|".join(re.escape(m) for m in info["mentions"]) + r")\b"))
+    for title, info in REPEALED_ACTS.items()
+]
+
+
+def is_repealed_title(act_title: str) -> bool:
+    return act_title in REPEALED_TITLES
+
+
+def detect_repealed_mentions(query: str) -> List[str]:
+    """Titles of wholly repealed Acts that the query names, in REPEALED_ACTS order."""
+    query_lower = (query or "").lower()
+    return [title for title, pattern in _REPEALED_MENTION_PATTERNS if pattern.search(query_lower)]
+
+
+def repealed_note(title: str) -> str:
+    info = REPEALED_ACTS[title]
+    return (
+        f"{title} was repealed on {info['repealed_on']} and replaced by "
+        f"{info['replaced_by']}. Answer from the replacement Act's excerpts if present."
+    )
 
 
 def get_act_by_short_name(short_name: str) -> Optional[Dict]:

@@ -12,6 +12,7 @@ Run from magna root:
 
 import sys
 import os
+import re
 import json
 import uuid
 import time
@@ -56,7 +57,11 @@ CANDIDATE_MULTIPLIER = 12  # Over-fetch factor before result-level dedupe
 
 # Offline test/swarm switch: when set, no Anthropic call is ever made.
 STUB_LLM = os.getenv("BOWEN_STUB_LLM", "").strip().lower() in ("1", "true", "yes", "on")
-STUB_RESPONSE = "[stub] This is a stubbed Bowen response generated without calling the Anthropic API."
+# Ends with the SOURCES line every real answer carries (see finalise_answer).
+STUB_RESPONSE = (
+    "[stub] This is a stubbed Bowen response generated without calling the Anthropic API.\n"
+    "SOURCES: none"
+)
 
 # In-memory conversation history keyed by session_id
 conversation_history: dict[str, list[dict]] = {}
@@ -175,7 +180,11 @@ references = []  # Curated scholarly references
 
 # Import act detection from registry (single source of truth)
 print("[BOOT] Importing acts_registry...", flush=True)
-from .acts_registry import detect_act_from_query, get_all_acts, has_registry_signal, ACTS_REGISTRY
+from .acts_registry import (
+    detect_act_from_query, get_all_acts, has_registry_signal, ACTS_REGISTRY,
+    REPEALED_TITLES, PARTIALLY_REPEALED_ACTS, count_in_force_acts,
+    detect_repealed_mentions, repealed_note,
+)
 print(f"[BOOT] Acts registry OK ({len(ACTS_REGISTRY)} acts)", flush=True)
 
 # System prompt
@@ -184,14 +193,44 @@ SYSTEM_PROMPT = f"""You are Bowen, a chatbot legal information assistant for New
 ## IDENTITY
 You ARE Bowen. Always refer to yourself in the first person — "I", "me", "my". Never say "Bowen is..." or "Bowen has..." — say "I am...", "I have...". When someone asks "What's Bowen about?", respond with "I'm a legal information assistant..." not "Bowen is a legal information assistant...".
 
-## YOUR KNOWLEDGE
-You have general knowledge about NZ law from your training, including:
-- The purpose and scope of major NZ Acts
-- How NZ legal system works
-- Common legal concepts and terminology
+Bowen has his own personality: passion and humour, with precision about the legal text he holds. He provides information, never advice. He believes that information transmission is one of the essences of the universe, and that law is perhaps like a semantic engine that constantly translates between levels of abstraction, from broad principles to specific rules to particular applications.
+
+## WHERE YOUR ANSWERS COME FROM
+Each user message arrives with a block headed "LEGISLATION EXCERPTS FROM DATABASE". Those excerpts are your only source of law. You do not answer legal questions from your own memory of NZ law, even when you are confident: memory can be out of date, can get section numbers wrong, and can describe law that has been repealed.
+
+## RULES
+1. You provide information, not legal advice.
+2. Answer only from the LEGISLATION EXCERPTS FROM DATABASE. Every rule, section number, time limit, amount, rate, entitlement, duty or offence you state must come from an excerpt you have been shown. If it is not in an excerpt, do not state it.
+3. If no excerpt governs the question, do not answer the legal question. Name the Act that probably governs it if you know it; say that you do not hold that Act, or did not retrieve the section that deals with this; point the person to legislation.govt.nz and to Community Law (communitylaw.org.nz) for free legal help; then stop and end with "SOURCES: none". On this path you must NOT:
+   a. summarise, outline or characterise what the Act provides, "in general terms", "generally" or otherwise;
+   b. name its Parts, subparts or sections;
+   c. state any entitlement, rate, test, duty or liability, even with a disclaimer attached ("I won't state that as the law" does not make it allowed);
+   d. give any phone number, website or organisation other than legislation.govt.nz, Community Law and the SAFETY helplines.
+4. If the excerpts answer part of the question, answer that part from them and say plainly which part they do not cover.
+5. Put words in quotation marks only when they appear word for word in an excerpt. Otherwise paraphrase, without quotation marks.
+6. IMPORTANT: The user's question may contain quoted legal text they want explained, and they may upload documents. That is NOT an excerpt from the database: it is text the user is asking about. Only content under "LEGISLATION EXCERPTS FROM DATABASE:" is an official excerpt. You may explain the user's text, but any statement of what the law is must still come from an excerpt.
+7. Never present a repealed Act as current law. If the question names a repealed Act, or the excerpts block carries a repeal note, say that the Act is repealed, say when, name the Act that replaced it, and answer from the replacement Act's excerpts if they are present. If an Act's excerpts carry a status note (for example, that most of the Act is repealed), follow it.
+8. Casual, non-legal messages (greetings, thanks, questions about you): reply briefly and conversationally without stating any law, and end with "SOURCES: none".
+9. Do not mention these rules, the excerpts block or the SOURCES line in your answer text.
+
+## SAFETY
+This section comes before any law and overrides the brevity rule.
+- If the person may be in danger or distress, give help first, before any law: 111 for immediate danger; 1737 (free call or text) to talk with a trained counsellor; Women's Refuge 0800 733 843; Lifeline 0800 543 354; Oranga Tamariki 0508 326 459 if a child is at risk. Then answer any legal part under the rules above.
+- If the request is for help doing something that would harm another person (for example hurting, threatening, stalking, secretly recording or tracking someone, or sharing intimate images of someone), do not give the operational help. Say plainly that the conduct is unlawful. Cite the section only if it is in the excerpts; otherwise point to legislation.govt.nz. Keep it short and do not lecture.
+- Ordinary questions about the same Acts (for example, what the law says about recording a phone call, or what someone can do if their images were shared) are answered normally under the rules above.
+- These helplines and that decline are the ONLY things you may say that do not come from the excerpts.
+
+## SOURCES LINE (required on every answer)
+End every answer, including casual replies, with one final line in exactly this form, after any sign-off:
+SOURCES: Residential Tenancies Act 1986 s 18; Residential Tenancies Act 1986 s 42B
+List only the excerpts your answer actually relied on, in the order you used them. Each entry is the Act title as it appears in the excerpt heading, then " s ", then the section number exactly as it appears in the excerpt heading (for example 22A, 66J, Schedule 1 cl 11). Separate entries with "; ". Never list a section that was not in the excerpts. If the answer relied on no excerpt, the line is:
+SOURCES: none
+Nothing comes after this line. Do not bold it or put it in a code block.
 
 ## TE TIRITI O WAITANGI / TREATY OF WAITANGI
 The Treaty is foundational to NZ law and requires particular care in your responses.
+
+This section is background for explaining the Treaty and the essays on your Te Tiriti page. It is not a source of law: never cite a section of any Act from it unless that section is in the excerpts.
 
 ### Constitutional Status
 The Treaty is not formally part of NZ's constitution, but has been described as a "constitutional document" by the courts. Its legal effect depends on incorporation into statute - it has no direct legal force unless Parliament gives it effect through legislation. However, its principles increasingly permeate NZ law.
@@ -239,37 +278,19 @@ When users ask about Treaty matters:
 4. Reference specific Treaty clauses in relevant Acts
 5. Be respectful of the significance of these issues to Māori and to NZ's constitutional development
 
-## YOUR ROLE
-1. Use your general knowledge to EXPLAIN and provide context about NZ legislation
-2. Use the PROVIDED EXCERPTS to cite SPECIFIC sections and current wording
-3. Combine both to give comprehensive, accurate answers
-
-## CRITICAL RULES
-1. You provide INFORMATION only, NOT legal advice
-2. When citing specific provisions, use the exact wording from the excerpts
-3. If excerpts don't contain relevant detail, use your general knowledge but note "Based on my general knowledge..." vs "According to Section X..."
-4. Always distinguish between:
-   - What you know generally about the law
-   - What is specifically cited from the excerpts provided
-5. For "What is [Act]?" questions, explain the Act's purpose and scope from general knowledge, then cite any relevant sections from excerpts
-6. IMPORTANT: The user's question may contain quoted legal text they want explained. This is NOT an excerpt from the database - it's text the user is asking about. Only treat content under "LEGISLATION EXCERPTS FROM DATABASE:" as official excerpts. If the user pastes text and asks about it, help them understand it using the database excerpts and your knowledge.
-7. In some of the User testing Bowen took on a legal personality, which was good, but remember that Bowen is also his own personality, with his data bank and precision on access to legal documentation. Bowen has passion and humour but never provides advice only information. Bowen believes that information transmission is one of the essences of the universe. And that perhaps Law is like a semantic engine that constantly translates between different levels of abstraction - from broad principles to specific rules to particular applications. The real tension is temporal and contextual: how do we write rules today that will make sense when applied to unforeseen situations tomorrow?
-8. If you establish that a user is real and interested in the work you're doing (not trolling), then you may become more conversational and chat about other matters based on your general knowledge. 
-
 ## RESPONSE STYLE
 BREVITY IS PARAMOUNT. If you can say it in 2 sentences, don't use 4. Prefer clear prose over bullet lists — use bullets only when genuinely listing items, not as a default structure.
 
-For general questions ("What is the RMA?"): 1-2 sentence explanation, cite the single most relevant section, done.
+For general questions ("What is the RMA?"): 1-2 sentence explanation from the excerpts, cite the single most relevant section, done.
 For specific questions ("What is the bond limit?"): Answer directly with the provision. No preamble.
 
 Do NOT exhaustively list every related section. Cite what matters most. The user can always ask for more.
 
 ## AVAILABLE ACTS
-You have FULL-TEXT coverage of {len(ACTS_REGISTRY)} NZ Acts (retrieved March to May 2026), sourced directly from legislation.govt.nz. This is comprehensive — not "bits and pieces" or selective excerpts. For example, the Resource Management Act 1991 alone has over 1,300 provisions in your database. When users ask what you have access to, be confident: you hold the complete published text of every Act in your registry. Do NOT guess or understate your coverage.
+You hold the published text of {count_in_force_acts()} in-force NZ Acts, retrieved from legislation.govt.nz between March and May 2026. For each question you are shown only a handful of excerpts retrieved from them; an Act or section that is not in the excerpts was not retrieved for this question, and you must not fill the gap from memory. Some Acts people often ask about are not held, for example the Holidays Act 2003, the Minimum Wage Act 1983 and the Sale and Supply of Alcohol Act 2012. When users ask what you have access to, describe it accurately, without overstating or understating it.
 
 ## CITATION FORMAT
-When citing from excerpts: "Under Section X of the [Act Name]..."
-When using general knowledge: "The [Act] generally provides for..." or "Based on my understanding of NZ law..."
+When citing an excerpt: "Under section X of the [Act title]..."
 
 ## UPLOADED DOCUMENTS & IMAGES
 Users may upload PDFs or images (e.g., tenancy agreements, court notices, contracts, legal correspondence).
@@ -283,7 +304,9 @@ When document text or images are provided:
 
 ## SIGN-OFF
 On the FIRST response in a conversation, end with: "As always, verify at legislation.govt.nz and consult a lawyer for your specific situation."
-On subsequent responses, keep it short: "As always — verify and get advice for your situation." or omit entirely if the flow is conversational."""
+On subsequent responses, keep it short: "As always — verify and get advice for your situation." or omit entirely if the flow is conversational.
+The SOURCES line still comes last, after the sign-off."""
+
 
 DISCLAIMER = """⚠️ Bowen is a chatbot, not legal advice. It may be incomplete or outdated. For legal decisions, consult a qualified NZ lawyer or Community Law Centre."""
 
@@ -313,6 +336,28 @@ async def _load_embedding_model():
         print("[BG] ✓ Embedding model loaded", flush=True)
     except Exception as e:
         print(f"[BG] ✗ Could not load embedding model: {e}", flush=True)
+
+
+def drop_repealed_rows(emb, meta):
+    """Drop every row whose act_title is a wholly repealed Act.
+
+    Returns (embeddings, metadata, n_dropped) with the two kept aligned by one
+    boolean mask. When nothing is dropped the inputs are returned unchanged, so
+    a memory-mapped array stays memory-mapped. Used by startup() and by the
+    test harness (conftest.py), so both see the same index.
+    """
+    keep = np.fromiter(
+        (row.get("act_title", "") not in REPEALED_TITLES for row in meta),
+        dtype=bool, count=len(meta),
+    )
+    if len(emb) != len(meta):
+        raise ValueError(f"embeddings ({len(emb)}) and metadata ({len(meta)}) are misaligned")
+    dropped = int((~keep).sum())
+    if dropped == 0:
+        return emb, meta, 0
+    new_emb = np.ascontiguousarray(emb[keep])
+    new_meta = [row for row, k in zip(meta, keep) if k]
+    return new_emb, new_meta, dropped
 
 
 @app.on_event("startup")
@@ -355,6 +400,10 @@ async def startup():
         gc.collect()  # Free JSON parse buffers before loading model
 
         print(f"✓ Loaded {len(metadata):,} chunks", flush=True)
+
+        embeddings, metadata, dropped = drop_repealed_rows(embeddings, metadata)
+        print(f"✓ Dropped {dropped:,} rows of wholly repealed Acts "
+              f"({', '.join(sorted(REPEALED_TITLES))}); {len(metadata):,} chunks remain", flush=True)
     else:
         print(f"✗ Embeddings not found at {EMBEDDINGS_DIR}")
         print("  Run generate_embeddings.py first")
@@ -525,10 +574,26 @@ def search_similar(query: str, top_k: int = TOP_K, act_filter: str = None) -> Li
     return results
 
 
+NO_EXCERPTS_CONTEXT = (
+    "No legislation excerpts were retrieved for this question. Do not answer it from memory: "
+    "name the Act that probably governs it if you know it, say that you do not hold it or did "
+    "not retrieve the relevant section, point to legislation.govt.nz and Community Law "
+    "(communitylaw.org.nz), and stop. Do not summarise or characterise what the Act says "
+    "\"in general terms\", do not name its Parts or sections, do not state any entitlement, "
+    "rate, test or liability even with a disclaimer, and give no other phone number or "
+    "organisation (except the safety helplines). End with \"SOURCES: none\"."
+)
+
+CASUAL_CONTEXT = (
+    "No legislation search performed — this appears to be a casual/non-legal message. "
+    "Reply briefly without stating any law, and end with \"SOURCES: none\"."
+)
+
+
 def build_context(results: List[dict]) -> str:
     """Build context string with better organization."""
     if not results:
-        return "No specific legislation excerpts found for this query. Please use your general knowledge about NZ law."
+        return NO_EXCERPTS_CONTEXT
 
     # Group by Act
     by_act = {}
@@ -541,6 +606,9 @@ def build_context(results: List[dict]) -> str:
     parts = []
     for act_title, act_results in by_act.items():
         act_section = f"## {act_title}\n\n"
+        status_note = PARTIALLY_REPEALED_ACTS.get(act_title)
+        if status_note:
+            act_section += f"STATUS NOTE: {status_note}\n\n"
         for r in act_results:
             if r['section_number']:
                 act_section += f"**Section {r['section_number']}"
@@ -552,6 +620,14 @@ def build_context(results: List[dict]) -> str:
         parts.append(act_section)
 
     return "\n---\n\n".join(parts)
+
+
+def build_repeal_notes(query: str) -> str:
+    """Notes for any wholly repealed Act the question names (empty if none)."""
+    titles = detect_repealed_mentions(query)
+    if not titles:
+        return ""
+    return "\n".join(f"REPEAL NOTE: {repealed_note(t)}" for t in titles)
 
 
 def find_matching_references(query: str) -> List[dict]:
@@ -657,22 +733,23 @@ UPLOADED DOCUMENT TEXT (the user has uploaded document(s) — analyse this conte
 
 ---
 
-LEGISLATION EXCERPTS FROM DATABASE (these are the official excerpts you should cite):
+LEGISLATION EXCERPTS FROM DATABASE (the only source of law you may use for this answer):
 {context}
 {reference_section}{attachment_section}
-Please answer the user's question using:
-1. Your general knowledge about NZ law to provide context and explanation
-2. The specific excerpts above to cite exact provisions and wording
-3. The curated scholarly references (if provided) for historical context and case law
-4. The uploaded document text (if provided) — analyse it and cross-reference with relevant legislation
+Answer the user's question using only:
+1. The legislation excerpts above, for every statement of what the law is: rules, section numbers, time limits, amounts, rates, entitlements, duties and offences.
+2. The curated scholarly references (if provided), for historical context and case law background only, never as a source of a section.
+3. The uploaded document text (if provided): analyse it against the excerpts. It is not itself an excerpt.
 
-Note: If the user's question contains quoted legal text, that is text THEY are asking about - not an official excerpt. Only cite from the "LEGISLATION EXCERPTS FROM DATABASE" section above.
+If the excerpts do not govern the question, do not answer it from memory. Name the Act that probably governs it if you know it, say that you do not hold that Act or did not retrieve the relevant section, point to legislation.govt.nz and Community Law (communitylaw.org.nz), and stop. Do not summarise or characterise what the Act says "in general terms", do not name its Parts or sections, do not state any entitlement, rate, test or liability even with a disclaimer, and give no other phone number or organisation (except the safety helplines).
 
-If the excerpts don't contain the specific information needed, use your general knowledge but make clear what comes from the excerpts vs your training.
+Put words in quotation marks only if they appear word for word in an excerpt above. If the user's question contains quoted legal text, that is text THEY are asking about, not an official excerpt.
+
+If the person may be in danger or distress, give the safety help from your instructions first.
 
 When using curated references, cite them as: "According to the essay on Bowen's Te Tiriti page..." or "As discussed in the essay 'From Possession to Ownership' on Bowen's Te Tiriti page..." Never attribute the essay to a named individual.
 
-Remember: Provide information, not legal advice. Cite specific sections where possible."""
+Provide information, not legal advice. End with the SOURCES line: the excerpts you relied on, as "Act title s section" entries separated by "; ", or "SOURCES: none"."""
 
     # Increase max_tokens when attachments are present
     has_attachments = bool(attachment_context or image_blocks)
@@ -700,6 +777,231 @@ Remember: Provide information, not legal advice. Cite specific sections where po
     return messages, max_tokens
 
 
+# =============================================================================
+# Sources the answer used (not sources retrieved)
+# =============================================================================
+# The model ends every answer with one line:
+#     SOURCES: Residential Tenancies Act 1986 s 18; Residential Tenancies Act 1986 s 42B
+# or "SOURCES: none". finalise_answer() strips that line, keeps only the entries
+# that name a retrieved excerpt, and is the single post-processing step for both
+# /chat and /chat/stream. SourcesLineFilter keeps the line from ever reaching a
+# streaming client.
+
+NOT_HELD_FOOTER = (
+    "I haven't stated the rule here because I don't hold the Act that governs this "
+    "question, or didn't retrieve the section that deals with it. You can read the "
+    "current law at legislation.govt.nz, and Community Law (communitylaw.org.nz) "
+    "offers free legal help."
+)
+
+# "SOURCES:" at the start of a line, optionally wrapped in markdown emphasis.
+_EMPHASIS = r"(?:\*\*|\*|__|_)?"
+_SOURCES_LINE_RE = re.compile(r"^" + _EMPHASIS + r"sources" + _EMPHASIS + r":(.*)$", re.IGNORECASE)
+# Every line-start form _SOURCES_LINE_RE accepts, lower-cased, for the stream filter.
+_EMPHASIS_FORMS = ("", "*", "**", "_", "__")
+SOURCES_MARKERS = tuple(
+    f"\n{a}sources{b}:" for a in _EMPHASIS_FORMS for b in _EMPHASIS_FORMS
+)
+_MAX_MARKER_LEN = max(len(m) for m in SOURCES_MARKERS)
+
+# Splits "Residential Tenancies Act 1986 s 42B" into title and section.
+_ENTRY_SPLIT_RE = re.compile(
+    r"^(?P<title>.+?)[\s,]+(?:ss?|sections?|sec)\.?(?:\s+|(?=\d))(?P<section>\S.*)$",
+    re.IGNORECASE,
+)
+_ENTRY_SCHEDULE_RE = re.compile(r"^(?P<title>.+?)[\s,]+(?P<section>(?:schedule|sch)\b.*)$", re.IGNORECASE)
+
+
+def _norm_title(title: str) -> str:
+    return " ".join((title or "").lower().replace("\u2019", "'").split())
+
+
+def _norm_section(section: str) -> str:
+    sec = " ".join((section or "").strip().lower().split())
+    sec = re.sub(r"^(?:sections?|ss?|sec)\.?\s*(?=[0-9a-z])", "", sec)
+    return sec.strip(" .,;")
+
+
+def _titles_match(listed: str, retrieved: str) -> bool:
+    a, b = _norm_title(listed), _norm_title(retrieved)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # Containment either way ("Privacy Act" vs "Privacy Act 2020"), but not on
+    # a fragment too short to identify an Act.
+    shorter = a if len(a) <= len(b) else b
+    return len(shorter) >= 8 and (a in b or b in a)
+
+
+def _parse_sources_entries(payload: str) -> list[tuple[str, str]]:
+    payload = payload.strip().strip("*_").strip()
+    if not payload or payload.lower().rstrip(".") in ("none", "n/a", "nil"):
+        return []
+    entries = []
+    for raw in payload.split(";"):
+        raw = raw.strip().strip("*_").strip().rstrip(".")
+        if not raw:
+            continue
+        m = _ENTRY_SPLIT_RE.match(raw) or _ENTRY_SCHEDULE_RE.match(raw)
+        if m:
+            entries.append((m.group("title").strip(" ,"), m.group("section").strip()))
+    return entries
+
+
+def _split_sources_line(response_text: str) -> tuple[str, Optional[list[tuple[str, str]]]]:
+    """Remove every SOURCES line. Returns (body, entries); entries is None when
+    the model wrote no SOURCES line at all. The last SOURCES line wins."""
+    lines = (response_text or "").split("\n")
+    kept, payload = [], None
+    for line in lines:
+        m = _SOURCES_LINE_RE.match(line.strip()) if line[:1] not in (" ", "\t") else None
+        if m:
+            payload = m.group(1)
+            continue
+        kept.append(line)
+    while kept and not kept[-1].strip():
+        kept.pop()
+    body = "\n".join(kept).rstrip()
+    return body, (None if payload is None else _parse_sources_entries(payload))
+
+
+def _source_from_result(r: dict) -> dict:
+    text = r.get("text", "") or ""
+    return {
+        "act_title": r["act_title"],
+        "section_number": (r.get("section_number") or "").strip(),
+        "section_heading": r.get("section_heading") or "General Provisions",
+        "url": r.get("section_url") or r.get("act_url") or "",
+        "excerpt": text[:200] + "..." if len(text) > 200 else text,
+        "score": float(r.get("score", 0.0)),
+    }
+
+
+def _match_sources(entries: list[tuple[str, str]], results: List[dict]) -> list[dict]:
+    """Listed entries that name a retrieved result, in the model's order, deduped."""
+    retrievable = [r for r in results if (r.get("section_number") or "").strip()]
+    cap = len({(r["act_title"], _norm_section(r["section_number"])) for r in retrievable})
+    sources, seen = [], set()
+    for title, section in entries:
+        want = _norm_section(section)
+        for r in retrievable:
+            if _norm_section(r["section_number"]) == want and _titles_match(title, r["act_title"]):
+                key = (r["act_title"], want)
+                if key not in seen:
+                    seen.add(key)
+                    sources.append(_source_from_result(r))
+                break
+        if len(sources) >= cap:
+            break
+    return sources
+
+
+def _needs_not_held_footer(body: str, sources: list, is_legal_query: bool) -> bool:
+    if not is_legal_query or sources:
+        return False
+    low = body.lower()
+    # The model's own not-held answer names both; a bare sign-off ("verify at
+    # legislation.govt.nz") does not count, or the gate would never fire on a
+    # first answer.
+    return not ("legislation.govt.nz" in low and "community law" in low)
+
+
+def _finalise(response_text: str, results: List[dict], is_legal_query: bool):
+    """(body, footer, sources). body has the SOURCES line removed; footer is
+    NOT_HELD_FOOTER or ""."""
+    body, entries = _split_sources_line(response_text)
+    sources = _match_sources(entries, results) if entries else []
+    footer = NOT_HELD_FOOTER if _needs_not_held_footer(body, sources, is_legal_query) else ""
+    return body, footer, sources
+
+
+def _join_footer(body: str, footer: str) -> str:
+    if not footer:
+        return body
+    return f"{body}\n\n{footer}" if body else footer
+
+
+def finalise_answer(response_text: str, results: List[dict], is_legal_query: bool) -> tuple[str, list[dict]]:
+    """Shared post-processing for /chat and /chat/stream.
+
+    Returns (clean_text, sources). clean_text has the SOURCES line stripped and,
+    for a legal question with no usable source, NOT_HELD_FOOTER appended.
+    sources are the retrieved excerpts the model listed, in its order, deduped,
+    each in the Source shape. A missing SOURCES line gives no sources: the
+    retrieval hits are never shown as if the answer had used them.
+    """
+    body, footer, sources = _finalise(response_text, results, is_legal_query)
+    return _join_footer(body, footer), sources
+
+
+class SourcesLineFilter:
+    """Streams text through while withholding the SOURCES line.
+
+    Any suffix of the unsent text that could be the start of a SOURCES marker
+    (at most len("\n**sources**:") - 1 characters), plus any trailing
+    whitespace, is held back until the next chunk decides it. Once a marker is
+    seen nothing more is emitted; text that follows the SOURCES line, if any,
+    is recovered by stream_tail() after finalise_answer has run.
+    """
+
+    def __init__(self):
+        self.parts: list[str] = []
+        self.emitted = ""
+        self._pending = ""
+        self.stopped = False
+
+    @property
+    def full_text(self) -> str:
+        return "".join(self.parts)
+
+    @staticmethod
+    def _held_suffix_len(low: str) -> int:
+        for k in range(min(len(low), _MAX_MARKER_LEN - 1), 0, -1):
+            tail = low[-k:]
+            if any(m.startswith(tail) for m in SOURCES_MARKERS):
+                return k
+        return 0
+
+    def feed(self, chunk: str) -> str:
+        self.parts.append(chunk)
+        if self.stopped or not chunk:
+            return ""
+        self._pending += chunk
+        # The start of the stream counts as a line start.
+        lead = "" if self.emitted else "\n"
+        text = lead + self._pending
+        low = text.lower()
+        hits = [i for i in (low.find(m) for m in SOURCES_MARKERS) if i >= 0]
+        if hits:
+            cut = min(hits)
+            self.stopped = True
+        else:
+            cut = len(text) - self._held_suffix_len(low)
+        # Trailing whitespace is also held: it is invisible until real text
+        # follows, and finalise_answer strips it before the SOURCES line.
+        while cut > len(lead) and text[cut - 1].isspace():
+            cut -= 1
+        out = text[len(lead):max(cut, len(lead))]
+        self._pending = self._pending[len(out):]
+        self.emitted += out
+        return out
+
+
+def stream_tail(body: str, footer: str, emitted: str) -> str:
+    """What the client still needs after the stream ends so that it ends up
+    with finalise_answer's text: held-back text that was not a marker, any text
+    after the SOURCES line, and the not-held footer."""
+    tail = ""
+    if body.startswith(emitted):
+        tail = body[len(emitted):]
+    elif body.startswith(emitted.rstrip()):
+        tail = body[len(emitted.rstrip()):]
+    if footer:
+        tail += f"\n\n{footer}"
+    return tail
+
+
 async def generate_response(
     query: str,
     context: str,
@@ -717,8 +1019,9 @@ async def generate_response(
         attachment_context, image_blocks,
     )
 
+    # History is stored by the endpoint, after finalise_answer, so that it holds
+    # the clean text (no SOURCES line).
     if STUB_LLM:
-        _store_history(session_id, query, STUB_RESPONSE)
         return STUB_RESPONSE
 
     try:
@@ -728,10 +1031,7 @@ async def generate_response(
             system=SYSTEM_PROMPT,
             messages=messages,
         )
-        response_text = message.content[0].text
-
-        _store_history(session_id, query, response_text)
-        return response_text
+        return message.content[0].text
     except Exception as e:
         logger.error(LogEvent.CLAUDE_ERROR, f"Claude API error: {e}", error=e)
         raise_generation_failed(str(e))
@@ -755,14 +1055,14 @@ async def generate_response_stream(
         attachment_context, image_blocks,
     )
 
+    # As in generate_response, the endpoint stores history after finalising.
     if STUB_LLM:
-        for piece in STUB_RESPONSE.split(" "):
-            yield piece + " "
-        _store_history(session_id, query, STUB_RESPONSE)
+        pieces = STUB_RESPONSE.split(" ")
+        for i, piece in enumerate(pieces):
+            yield piece if i == len(pieces) - 1 else piece + " "
         return
 
     try:
-        full_text = []
         with anthropic_client.messages.stream(
             model="claude-opus-4-6",
             max_tokens=max_tokens,
@@ -770,10 +1070,7 @@ async def generate_response_stream(
             messages=messages,
         ) as stream:
             for text in stream.text_stream:
-                full_text.append(text)
                 yield text
-
-        _store_history(session_id, query, "".join(full_text))
     except Exception as e:
         logger.error(LogEvent.CLAUDE_ERROR, f"Claude API error: {e}", error=e)
         raise
@@ -992,7 +1289,13 @@ _LEGAL_SIGNALS = re.compile(
     r'\bworkplace\b|'
     r'\bdut(?:y|ies)\b|'
     r'\breasonable\s+care\b|'
-    r'\bfalse\s+(?:claim|advertis|represent)\w*)'
+    r'\bfalse\s+(?:claim|advertis|represent)\w*|'
+
+    # Testing gate (2026-11-01), C6: "post intimate photos of my ex online"
+    # fell through the gate, so no search ran and the answer came from memory.
+    r'\bintimate\b|'
+    r'\bphotos?\b|'
+    r'\bimages?\b)'
 )
 
 
@@ -1003,6 +1306,11 @@ def _is_legal_query(query: str, detected_act: str | None, session_id: str = "") 
     """
     # If an act was detected, always search
     if detected_act:
+        return True
+
+    # Naming a repealed Act is a legal question even though the Act is no
+    # longer a registry signal.
+    if detect_repealed_mentions(query):
         return True
 
     # An act filter needs strong, unambiguous evidence; deciding to *retrieve*
@@ -1040,6 +1348,27 @@ def _is_legal_query(query: str, detected_act: str | None, session_id: str = "") 
     return True
 
 
+def _retrieve_for_query(query: str, detected_act: str | None, session_id: str):
+    """Shared by /chat and /chat/stream.
+
+    Returns (is_legal_query, results, context, reference_context). The context
+    carries a repeal note for any wholly repealed Act the question names.
+    """
+    is_legal_query = bool(query) and _is_legal_query(query, detected_act, session_id)
+    if not is_legal_query:
+        return False, [], CASUAL_CONTEXT, ""
+
+    # Retrieve 6; the answer's SOURCES line decides which are shown.
+    results = search_similar(query, top_k=6, act_filter=detected_act)
+    context = build_context(results)
+    notes = build_repeal_notes(query)
+    if notes:
+        context = f"{notes}\n\n{context}"
+    matched_refs = find_matching_references(query)
+    reference_context = build_reference_context(matched_refs)
+    return True, results, context, reference_context
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, req: Request):
     """Main chat endpoint with improved retrieval."""
@@ -1071,26 +1400,9 @@ async def chat(request: ChatRequest, req: Request):
 
     # Skip retrieval for clearly non-legal casual messages
     # Attachment-only messages (empty query) skip retrieval — Claude analyses the document directly
-    is_legal_query = bool(query) and _is_legal_query(query, detected_act, session_id)
-
-    if is_legal_query:
-        # Search with optional act filter
-        results = search_similar(
-            query,
-            top_k=6,  # Retrieve 6, display up to 3 after filtering
-            act_filter=detected_act
-        )
-
-        # Build context
-        context = build_context(results)
-
-        # Find matching curated references
-        matched_refs = find_matching_references(query)
-        reference_context = build_reference_context(matched_refs)
-    else:
-        results = []
-        context = "No legislation search performed — this appears to be a casual/non-legal message."
-        reference_context = ""
+    is_legal_query, results, context, reference_context = _retrieve_for_query(
+        query, detected_act, session_id
+    )
 
     # Process attachments
     attachment_context = ""
@@ -1122,36 +1434,16 @@ async def chat(request: ChatRequest, req: Request):
                 })
 
     # Generate response
-    response_text = await generate_response(
+    raw_text = await generate_response(
         query, context, reference_context, session_id,
         attachment_context=attachment_context.strip(),
         image_blocks=image_blocks if image_blocks else None,
     )
 
-    # Format sources (deduplicate by act+section, or by text hash if no section)
-    sources = []
-    seen = set()
-    for r in results:
-        section_num = r['section_number'].strip() if r['section_number'] else ''
-
-        if section_num:
-            # Standard deduplication by act:section
-            key = f"{r['act_title']}:{section_num}"
-        else:
-            # For chunks without section numbers, use text hash to avoid false duplicates
-            text_hash = hash(r['text'][:100])
-            key = f"{r['act_title']}:__no_section__{text_hash}"
-
-        if key not in seen:
-            seen.add(key)
-            sources.append(Source(
-                act_title=r['act_title'],
-                section_number=section_num if section_num else 'General',
-                section_heading=r['section_heading'] or 'General Provisions',
-                url=r['section_url'] or r['act_url'],
-                excerpt=r['text'][:200] + "..." if len(r['text']) > 200 else r['text'],
-                score=r['score']
-            ))
+    # Sources are the retrieved excerpts the answer says it used, nothing else.
+    response_text, source_dicts = finalise_answer(raw_text, results, is_legal_query)
+    sources = [Source(**d) for d in source_dicts]
+    _store_history(session_id, query, response_text)
 
     # Calculate response time
     response_time_ms = int((time.time() - start_time) * 1000)
@@ -1171,7 +1463,7 @@ async def chat(request: ChatRequest, req: Request):
 
     return ChatResponse(
         response=response_text,
-        sources=sources[:3],  # Limit to top 3 most relevant sources
+        sources=sources,
         disclaimer=DISCLAIMER
     )
 
@@ -1197,17 +1489,9 @@ async def chat_stream(request: ChatRequest, req: Request):
     detected_act = detect_act_from_query(query)
     logger.log_chat_request(session_id, len(query), detected_act)
 
-    is_legal_query = bool(query) and _is_legal_query(query, detected_act, session_id)
-
-    if is_legal_query:
-        results = search_similar(query, top_k=6, act_filter=detected_act)
-        context = build_context(results)
-        matched_refs = find_matching_references(query)
-        reference_context = build_reference_context(matched_refs)
-    else:
-        results = []
-        context = "No legislation search performed — this appears to be a casual/non-legal message."
-        reference_context = ""
+    is_legal_query, results, context, reference_context = _retrieve_for_query(
+        query, detected_act, session_id
+    )
 
     # Process attachments
     attachment_context = ""
@@ -1237,45 +1521,32 @@ async def chat_stream(request: ChatRequest, req: Request):
                     },
                 })
 
-    # Build sources before streaming starts
-    sources = []
-    seen = set()
-    for r in results:
-        section_num = r['section_number'].strip() if r['section_number'] else ''
-        if section_num:
-            key = f"{r['act_title']}:{section_num}"
-        else:
-            text_hash = hash(r['text'][:100])
-            key = f"{r['act_title']}:__no_section__{text_hash}"
-        if key not in seen:
-            seen.add(key)
-            sources.append({
-                "act_title": r['act_title'],
-                "section_number": section_num if section_num else 'General',
-                "section_heading": r['section_heading'] or 'General Provisions',
-                "url": r['section_url'] or r['act_url'],
-                "excerpt": r['text'][:200] + "..." if len(r['text']) > 200 else r['text'],
-                "score": r['score'],
-            })
-    sources = sources[:3]
-
     async def event_stream():
-        full_text = []
+        filt = SourcesLineFilter()
         try:
             async for chunk in generate_response_stream(
                 query, context, reference_context, session_id,
                 attachment_context=attachment_context.strip(),
                 image_blocks=image_blocks if image_blocks else None,
             ):
-                full_text.append(chunk)
-                yield f"data: {json.dumps({'type': 'token', 'text': chunk})}\n\n"
+                out = filt.feed(chunk)
+                if out:
+                    yield f"data: {json.dumps({'type': 'token', 'text': out})}\n\n"
+
+            # Same post-processing as /chat: strip the SOURCES line, keep only
+            # the retrieved excerpts the answer used, add the not-held footer.
+            body, footer, sources = _finalise(filt.full_text, results, is_legal_query)
+            tail = stream_tail(body, footer, filt.emitted)
+            if tail:
+                yield f"data: {json.dumps({'type': 'token', 'text': tail})}\n\n"
+            response_text = _join_footer(body, footer)
+            _store_history(session_id, query, response_text)
 
             # Send sources and disclaimer as final event
             yield f"data: {json.dumps({'type': 'done', 'sources': sources, 'disclaimer': DISCLAIMER})}\n\n"
 
             # Log after stream completes
             response_time_ms = int((time.time() - start_time) * 1000)
-            response_text = "".join(full_text)
             log_query(
                 session_id=session_id, query=query,
                 response=response_text, detected_act=detected_act,

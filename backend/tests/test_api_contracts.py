@@ -22,6 +22,36 @@ PNG_1PX = base64.b64encode(base64.b64decode(
 DEMO_QUESTION = "What is the maximum bond a landlord can require?"
 
 
+def expected_stub_text(app_module, is_legal=True):
+    """What the client sees for STUB_RESPONSE: SOURCES line stripped, and the
+    not-held footer added for a legal question (the stub cites nothing)."""
+    text, sources = app_module.finalise_answer(app_module.STUB_RESPONSE, [], is_legal)
+    assert sources == []
+    return text
+
+
+@pytest.fixture
+def citing_stub(app_module, monkeypatch):
+    """Swap STUB_RESPONSE for one that cites two retrieved sections of the demo
+    question, a duplicate of the first, and a section that was not retrieved.
+    Returns the (act_title, section_number) pairs that should come back."""
+    detected = app_module.detect_act_from_query(DEMO_QUESTION)
+    results = app_module.search_similar(DEMO_QUESTION, top_k=6, act_filter=detected)
+    distinct = []
+    for r in results:
+        key = (r["act_title"], r["section_number"])
+        if r["section_number"] and key not in distinct:
+            distinct.append(key)
+    assert len(distinct) >= 2, "demo question should retrieve at least two sections"
+    picked = [distinct[1], distinct[0]]  # deliberately not retrieval order
+    entries = [f"{t} s {n}" for t, n in picked]
+    entries.insert(1, f"{picked[0][0]} s {picked[0][1]}")       # duplicate
+    entries.append(f"{picked[0][0]} s 999Z")                    # never retrieved
+    monkeypatch.setattr(app_module, "STUB_RESPONSE",
+                        "[stub] cited answer.\n\nSOURCES: " + "; ".join(entries))
+    return picked
+
+
 def sse_events(body: str):
     """Parse an SSE body into a list of decoded `data:` payloads."""
     events = []
@@ -118,22 +148,26 @@ def test_chat_shape_stubbed(client, app_module):
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {"response", "sources", "disclaimer"}
-    assert body["response"] == app_module.STUB_RESPONSE
+    assert body["response"] == expected_stub_text(app_module)
+    assert "SOURCES" not in body["response"]
     assert body["disclaimer"] == app_module.DISCLAIMER
-    assert 0 < len(body["sources"]) <= 3
-    for source in body["sources"]:
-        assert set(source) == {"act_title", "section_number", "section_heading",
-                               "url", "excerpt", "score"}
+    # The stub ends "SOURCES: none", so nothing is shown, whatever was retrieved.
+    assert body["sources"] == []
 
 
-def test_chat_sources_are_distinct_sections(client):
-    """The demo-visible symptom: /chat must not answer from a single source
-    just because the corpus repeats it."""
+def test_chat_sources_are_the_cited_sections(client, citing_stub):
+    """Sources are the retrieved sections the answer lists, in its order,
+    deduped, and never a section that was not retrieved."""
     body = client.post("/chat", json={"message": DEMO_QUESTION,
                                       "session_id": "test-chat-distinct"}).json()
     keys = [(s["act_title"], s["section_number"]) for s in body["sources"]]
+    assert keys == citing_stub
     assert len(keys) == len(set(keys))
-    assert len(keys) >= 2, "expected more than one distinct source for a core demo question"
+    assert "SOURCES" not in body["response"]
+    assert body["response"] == "[stub] cited answer."
+    for source in body["sources"]:
+        assert set(source) == {"act_title", "section_number", "section_heading",
+                               "url", "excerpt", "score"}
 
 
 def test_chat_casual_message_skips_retrieval(client):
@@ -146,7 +180,8 @@ def test_chat_stores_history(client, app_module):
     client.post("/chat", json={"message": DEMO_QUESTION, "session_id": "test-history"})
     history = app_module.conversation_history["test-history"]
     assert [m["role"] for m in history] == ["user", "assistant"]
-    assert history[1]["content"] == app_module.STUB_RESPONSE
+    assert history[1]["content"] == expected_stub_text(app_module)
+    assert "SOURCES" not in history[1]["content"]
 
 
 def test_chat_accepts_valid_png_attachment(client):
@@ -230,12 +265,25 @@ def test_chat_stream_framing(client, app_module):
     assert types[:-1], "expected at least one token event"
 
     streamed = "".join(e["text"] for e in events[:-1])
-    assert streamed.strip() == app_module.STUB_RESPONSE
+    assert streamed == expected_stub_text(app_module)
+    assert "SOURCES" not in streamed
 
     done = events[-1]
     assert set(done) == {"type", "sources", "disclaimer"}
     assert done["disclaimer"] == app_module.DISCLAIMER
-    assert 0 < len(done["sources"]) <= 3
+    assert done["sources"] == []
+
+
+def test_chat_stream_matches_chat(client, citing_stub):
+    """Both endpoints run finalise_answer: same text, same sources."""
+    plain = client.post("/chat", json={"message": DEMO_QUESTION}).json()
+    events = sse_events(client.post("/chat/stream", json={"message": DEMO_QUESTION}).text)
+    streamed = "".join(e["text"] for e in events if e["type"] == "token")
+    assert streamed == plain["response"]
+    assert "SOURCES" not in streamed
+    done = events[-1]
+    assert done["sources"] == plain["sources"]
+    assert [(s["act_title"], s["section_number"]) for s in done["sources"]] == citing_stub
     for source in done["sources"]:
         assert set(source) == {"act_title", "section_number", "section_heading",
                                "url", "excerpt", "score"}

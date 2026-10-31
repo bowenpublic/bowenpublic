@@ -5,13 +5,25 @@ import { ChevronDown, ChevronUp, ExternalLink, BookOpen } from 'lucide-react';
 import { Source } from '@/types';
 
 interface SourcesProps {
-  sources: Source[];
+  sources?: Source[];
 }
 
 export function Sources({ sources }: SourcesProps) {
   const [expanded, setExpanded] = useState(false);
 
-  if (!sources || sources.length === 0) return null;
+  // undefined: the answer is still streaming, so show nothing yet.
+  if (!sources) return null;
+
+  // An empty list means the answer used no section Bowen holds; say so.
+  if (sources.length === 0) {
+    return (
+      <div className="mt-3 pt-3 border-t border-slate-200">
+        <p className="text-xs text-slate-500">
+          No sections from the Acts Bowen holds were used in this answer.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-3 pt-3 border-t border-slate-200">

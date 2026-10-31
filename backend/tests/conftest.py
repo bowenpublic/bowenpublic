@@ -103,9 +103,12 @@ def app_module(block_network):
             "backend/tests/scripts/build_fixture.py (see backend/tests/README.md)."
         )
 
-    main_module.embeddings = np.load(embeddings_path, mmap_mode="r")
+    loaded_embeddings = np.load(embeddings_path, mmap_mode="r")
     with open(metadata_path, "r", encoding="utf-8") as fh:
-        main_module.metadata = json.load(fh)
+        loaded_metadata = json.load(fh)
+    # Same filter as startup(): wholly repealed Acts never reach search.
+    (main_module.embeddings, main_module.metadata,
+     _dropped) = main_module.drop_repealed_rows(loaded_embeddings, loaded_metadata)
     main_module.embedding_model = SentenceTransformer(main_module.EMBEDDING_MODEL)
 
     # Never a real client, whatever the ambient environment holds.

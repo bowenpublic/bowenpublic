@@ -49,6 +49,8 @@ def main():
     app_main.embeddings = np.load(embeddings_dir / "embeddings.npy", mmap_mode="r")
     with open(embeddings_dir / "metadata.json", encoding="utf-8") as fh:
         app_main.metadata = json.load(fh)
+    app_main.embeddings, app_main.metadata, _ = app_main.drop_repealed_rows(
+        app_main.embeddings, app_main.metadata)
     app_main.embedding_model = SentenceTransformer(app_main.EMBEDDING_MODEL)
     app_main.anthropic_client = app_main.STUB_CLIENT
 
