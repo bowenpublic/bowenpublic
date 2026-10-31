@@ -93,7 +93,7 @@ export default function DataPolicyPage() {
             <h2>Questions</h2>
             <p>
               If you have any questions about this data policy or how Bowen handles your
-              information, please get in touch with us.<br /><br />privacy@bowenpublic.com
+              information, please get in touch with us.<br /><br />info@bowenpublic.com
             </p>
           </section>
 

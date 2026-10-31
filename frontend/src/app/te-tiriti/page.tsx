@@ -226,7 +226,7 @@ export default function TeTiritiPage() {
               This is sensitive and important work. We welcome feedback from users, particularly
               those with expertise in Treaty jurisprudence.
             </p>
-            <p>joe@bowenpublic.com</p>
+            <p>info@bowenpublic.com</p>
           </section>
 
           {/* Section 3: Essay */}

@@ -33,19 +33,9 @@ export default function AboutPage() {
           <section className="mb-10">
             <h2 className="font-bold">Contact</h2>
             <p>
-              For general enquiries, reach out to{' '}
-              <a href="mailto:joe@bowenpublic.com" className="text-blue-600 hover:underline">
-                joe@bowenpublic.com
-              </a>
-            </p>
-          </section>
-
-          <section className="mb-10">
-            <h2 className="font-bold">Problems &amp; Bugs</h2>
-            <p>
-              To report issues or bugs, email{' '}
-              <a href="mailto:bugs@bowenpublic.com" className="text-blue-600 hover:underline">
-                bugs@bowenpublic.com
+              For all enquiries, reach out to{' '}
+              <a href="mailto:info@bowenpublic.com" className="text-blue-600 hover:underline">
+                info@bowenpublic.com
               </a>
             </p>
           </section>
