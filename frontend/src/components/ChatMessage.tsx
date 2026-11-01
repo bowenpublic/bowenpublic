@@ -2,7 +2,7 @@
 
 import ReactMarkdown from 'react-markdown';
 import { FileText, Image as ImageIcon } from 'lucide-react';
-import { ManatIcon } from './ManatIcon';
+import Image from 'next/image';
 import { Message } from '@/types';
 import { Sources } from './Sources';
 
@@ -28,9 +28,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
       >
         {!isUser && (
           <div className="flex items-center gap-2 mb-3 pb-2 border-b border-slate-100">
-            <div className="w-6 h-6 bg-gradient-to-br from-primary to-primary-light rounded-md flex items-center justify-center">
-              <ManatIcon className="w-3.5 h-3.5 text-white" />
-            </div>
+            <Image src="/logo-mark.png" alt="" width={24} height={24} className="w-6 h-6" />
             <span className="bowen-brand text-xs text-slate-500">Bowen</span>
           </div>
         )}

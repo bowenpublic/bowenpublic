@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
-import { AlertCircle, BookOpen } from 'lucide-react';
+import { AlertCircle, ArrowDown, BookOpen } from 'lucide-react';
 import { KiwiIcon } from './KiwiIcon';
 import { useChat } from '@/hooks/useChat';
 import { ChatMessage } from './ChatMessage';
@@ -126,8 +126,13 @@ export function Chat() {
   const [acts, setActs] = useState<Array<{ title: string; short_name: string; topics: string[] }> | null>(null);
   const [showLegislation, setShowLegislation] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const lastAssistantRef = useRef<HTMLDivElement>(null);
-  const wasLoadingRef = useRef(false);
+  const lastTurnRef = useRef<HTMLDivElement>(null);
+  // Scroll behaviour mirrors mainstream chat UIs: the latest question is pinned
+  // to the top on send, the answer is followed only while the reader is already
+  // at the bottom, and scrolling up hands control back to the reader.
+  const followRef = useRef(true);
+  const prevCountRef = useRef(0);
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   // Fetch acts from API on mount
   useEffect(() => {
@@ -149,26 +154,57 @@ export function Chat() {
       });
   }, []);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  const HEADER_OFFSET = 80; // sticky header height
+  const NEAR_BOTTOM_PX = 160; // within this of the page end counts as "at the bottom"
 
-  // Scroll to top of assistant answer when response completes
+  const isNearBottom = () =>
+    window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - NEAR_BOTTOM_PX;
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+  }, []);
+
+  // Re-engage following when the reader returns to the bottom; disengage the
+  // moment they deliberately scroll up (wheel/touch), so streaming never fights them.
   useEffect(() => {
-    if (wasLoadingRef.current && !isLoading && messages.length > 0) {
-      // Loading just finished - scroll to top of the last assistant message
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage.role === 'assistant' && lastAssistantRef.current) {
-        const headerHeight = 80; // Account for sticky header
-        const elementTop = lastAssistantRef.current.getBoundingClientRect().top + window.scrollY;
-        window.scrollTo({ top: elementTop - headerHeight, behavior: 'smooth' });
-      }
-    } else if (isLoading) {
-      // While loading, scroll to bottom to show typing indicator
-      scrollToBottom();
+    const onScroll = () => {
+      const near = isNearBottom();
+      if (near) followRef.current = true;
+      setShowScrollButton(!near && messages.length > 0);
+    };
+    const onIntentUp = (e: WheelEvent | TouchEvent) => {
+      if ('deltaY' in e ? e.deltaY < 0 : true) followRef.current = false;
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('wheel', onIntentUp, { passive: true });
+    window.addEventListener('touchmove', onIntentUp, { passive: true });
+    onScroll();
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('wheel', onIntentUp);
+      window.removeEventListener('touchmove', onIntentUp);
+    };
+  }, [messages.length]);
+
+  // On send: pin the new question to the top of the viewport and start following.
+  // While streaming: keep the end in view only while following.
+  useEffect(() => {
+    const added = messages.slice(prevCountRef.current);
+    const justSent = isLoading && added.some((m) => m.role === 'user');
+    prevCountRef.current = messages.length;
+
+    if (justSent && lastTurnRef.current) {
+      followRef.current = true;
+      const top = lastTurnRef.current.getBoundingClientRect().top + window.scrollY - HEADER_OFFSET;
+      window.scrollTo({ top, behavior: 'smooth' });
+      return;
     }
-    wasLoadingRef.current = isLoading;
-  }, [messages, isLoading]);
+    if (isLoading && followRef.current) {
+      scrollToBottom('auto');
+    }
+  }, [messages, isLoading, scrollToBottom]);
+
+  const lastUserIndex = Math.max(0, messages.map((m) => m.role).lastIndexOf('user'));
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
@@ -300,25 +336,42 @@ export function Chat() {
           </div>
         ) : (
           <div className="space-y-6 pb-32">
-            {messages.map((message, index) => {
-              const isLastAssistant = message.role === 'assistant' && index === messages.length - 1;
-              return (
-                <div key={index} ref={isLastAssistant ? lastAssistantRef : undefined}>
-                  <ChatMessage message={message} />
+            {messages.slice(0, lastUserIndex).map((message, index) => (
+              <ChatMessage key={index} message={message} />
+            ))}
+            {/* The latest turn gets a minimum height so the question can sit at the top
+                of the viewport while the answer fills the space below it. */}
+            <div ref={lastTurnRef} className="space-y-6 min-h-[calc(100vh-15rem)]">
+              {messages.slice(lastUserIndex).map((message, index) => (
+                <ChatMessage key={lastUserIndex + index} message={message} />
+              ))}
+              {isLoading && !(messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].content) && <TypingIndicator />}
+              {error && (
+                <div className="flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
+                  <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                  <p>{error}</p>
                 </div>
-              );
-            })}
-            {isLoading && !(messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].content) && <TypingIndicator />}
-            {error && (
-              <div className="flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
-                <AlertCircle className="w-5 h-5 flex-shrink-0" />
-                <p>{error}</p>
-              </div>
-            )}
+              )}
+            </div>
             <div ref={messagesEndRef} />
           </div>
         )}
       </main>
+
+      {/* Scroll to bottom (shown when the reader has scrolled away from the latest content) */}
+      {showScrollButton && (
+        <button
+          type="button"
+          onClick={() => {
+            followRef.current = true;
+            scrollToBottom('smooth');
+          }}
+          aria-label="Scroll to latest"
+          className="fixed bottom-44 left-1/2 -translate-x-1/2 z-30 w-9 h-9 rounded-full bg-white border border-slate-200 shadow-md flex items-center justify-center text-slate-600 hover:bg-slate-50 transition-colors"
+        >
+          <ArrowDown className="w-4 h-4" />
+        </button>
+      )}
 
       {/* Input Area */}
       <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-8 pb-4 px-4">

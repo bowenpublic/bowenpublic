@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { RummageKiwi } from './RummageKiwi';
-import { ManatIcon } from './ManatIcon';
+import Image from 'next/image';
 
 const LOADING_PHRASES = [
   'Searching legislation...',
@@ -41,9 +41,7 @@ export function TypingIndicator() {
     <div className="flex justify-start">
       <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-sm p-4">
         <div className="flex items-center gap-2 mb-2">
-          <div className="w-6 h-6 bg-gradient-to-br from-primary to-primary-light rounded-md flex items-center justify-center">
-            <ManatIcon className="w-3.5 h-3.5 text-white" />
-          </div>
+          <Image src="/logo-mark.png" alt="" width={24} height={24} className="w-6 h-6" />
           <span className="bowen-brand text-xs text-slate-500">Bowen</span>
         </div>
         <div className="flex items-center gap-3">

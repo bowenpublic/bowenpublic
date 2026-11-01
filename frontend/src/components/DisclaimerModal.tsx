@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { ManatIcon } from './ManatIcon';
+import Image from 'next/image';
 
 const DISCLAIMER_KEY = 'bowen-disclaimer-accepted';
 
@@ -34,9 +34,7 @@ export function DisclaimerModal({ onAccept }: DisclaimerModalProps) {
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl p-8 max-w-lg w-full shadow-2xl">
-        <div className="w-14 h-14 bg-gradient-to-br from-primary to-primary-light rounded-xl flex items-center justify-center mb-6">
-          <ManatIcon className="w-7 h-7 text-white" />
-        </div>
+        <Image src="/logo-mark.png" alt="Bowen Public logo" width={56} height={56} className="w-14 h-14 mb-6" />
 
         <h2 className="text-2xl text-primary mb-4">
           Welcome to <span className="bowen-brand">Bowen</span>
