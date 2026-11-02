@@ -171,7 +171,9 @@ def test_r4_score_sanity(app_module, query):
     scores = [r["score"] for r in results]
     assert all(math.isfinite(s) for s in scores), "non-finite score"
     assert scores == sorted(scores, reverse=True), "scores not descending"
-    assert all(s >= app_module.MIN_SIMILARITY for s in scores), "score below MIN_SIMILARITY"
+    # A pinned key section may sit below MIN_SIMILARITY, down to PINNED_MIN_SIMILARITY.
+    assert all(r["score"] >= (app_module.PINNED_MIN_SIMILARITY if r["pinned"] else app_module.MIN_SIMILARITY)
+               for r in results), "score below the floor"
     # Raw cosine similarity of normalised vectors is <= 1, so the capped
     # boosted score can never exceed MAX_BOOST.
     assert all(s <= app_module.MAX_BOOST + 1e-6 for s in scores), "boost cap exceeded"

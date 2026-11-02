@@ -14,7 +14,7 @@
       "per_query_max": 3000,
       "note": "Local budget over the 10-act mini fixture on an M-series laptop. Steady-state cost measured 2026-09-02 is ~28 ms mean / ~57 ms p95 per query (encode ~14 ms, search_similar ~16-20 ms, detect_act_from_query ~0.3 ms). Widened from 900/2000 in C-002 because the machine now co-hosts the swarm backend: one golden run taken while that process was loading its index measured p95 1075 ms / max 1782 ms with no code change. The budget is deliberately ~25x the real cost so it catches algorithmic regressions, not scheduler contention. Production over the full release measures ~3-4 s and is not covered by this budget."
     },
-    "entry_count": 55
+    "entry_count": 63
   },
   "entries": [
     {
@@ -346,6 +346,54 @@
       "act": "Constitution Act 1986",
       "section": "17",
       "notes": "Term of Parliament."
+    },
+    {
+      "question": "My landlord wants to keep my bond because I put picture hooks in the wall. Can he?",
+      "act": "Residential Tenancies Act 1986",
+      "section": "42B",
+      "notes": "Round 2 A1 (2026-11-01). Minor changes; key_sections 'picture hooks' pins 42A/42B."
+    },
+    {
+      "question": "How long does a council have to answer an Official Information Act request?",
+      "act": "Official Information Act 1982",
+      "section": "15",
+      "notes": "Round 2 A5. Decisions on requests (20 working days); LGOIMA s13 is the council equivalent but LGOIMA is not in the mini fixture."
+    },
+    {
+      "question": "Can I record a phone call without telling the other person?",
+      "act": "Crimes Act 1961",
+      "section": "216B",
+      "notes": "Round 2 A16. Party to the communication may record it; key_sections 'record a phone call' pins 216B."
+    },
+    {
+      "question": "Under the Privacy Act, how many working days does an agency have to respond to my request for my personal information, and can it extend that time?",
+      "act": "Privacy Act 2020",
+      "section": "48",
+      "notes": "Round 2 B5. Extension of time limits; combined topic extension + privacy pins 48."
+    },
+    {
+      "question": "I bought a second-hand car from a dealer and the gearbox failed after three weeks. What are my rights?",
+      "act": "Consumer Guarantees Act 1993",
+      "section": "6",
+      "notes": "Round 2 D1. Guarantee as to acceptable quality (ss 6-8); combined topic faulty + bought pins 6/7/8."
+    },
+    {
+      "question": "I want to have a pet, but the owner has refused.",
+      "act": "Residential Tenancies Act 1986",
+      "section": "42E",
+      "notes": "Live campaign day, 2 Nov 2026. Written consent for tenant to keep pet (42E; grounds in 42F)."
+    },
+    {
+      "question": "The owner didn't give any notice for the inspection and demanded I let them in, can I refuse?",
+      "act": "Residential Tenancies Act 1986",
+      "section": "48",
+      "notes": "Live campaign day, 2 Nov 2026. Landlord's right of entry; retrieval returned Building Act inspections."
+    },
+    {
+      "question": "Must a rental house have heating?",
+      "act": "Residential Tenancies Act 1986",
+      "section": "45",
+      "notes": "Live campaign day, 2 Nov 2026. Landlord's responsibilities, s45(1)(bb) healthy homes standards (138B lists heating); the standards themselves are regulations, not held."
     }
   ]
 }

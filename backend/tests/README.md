@@ -23,13 +23,14 @@ is mandatory — the suite refuses to run without it.
 | Path | What it is |
 |---|---|
 | `conftest.py` | Imports `backend.app.main` *without* running `startup()`, loads the index from `EMBEDDINGS_DIR`, installs the stub client, blocks the network |
-| `golden/retrieval.json` | 55 golden `(question, act, section, notes)` entries + header (data release, latency budget) |
+| `golden/retrieval.json` | 63 golden `(question, act, section, notes)` entries + header (data release, latency budget) |
 | `golden/baseline.json` | Recorded pass set and known misses; the regression lock |
 | `golden_runner.py` | Shared evaluation helpers (also used by `scripts/run_golden.py`) |
 | `test_retrieval.py` | S1 — R1 uniqueness, R3 act filter, R4 score sanity, R5 latency, dedupe behaviour |
 | `test_golden_retrieval.py` | S1 — R2 golden hits |
 | `test_query_gate.py` | S2 — G1/G2/G3, 34 accept/reject cases plus act detection |
 | `test_api_contracts.py` | S3 — A1/A2/A3, SSE framing, validation, `/debug/search` gate |
+| `test_round2_followups.py` | Round-two ticket: pinned key sections, held-Acts line and footer, misspelt Act titles, everyday-wording topics |
 | `NOTES-duplication.md` | Root-cause note for the ~10x corpus duplication |
 | `fixtures/mini/` | 10-act deduplicated index, 25 MB (committed) |
 | `scripts/build_fixture.py` | Builds a fixture from a full (embeddings, metadata) pair |

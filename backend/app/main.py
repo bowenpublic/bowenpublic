@@ -21,7 +21,7 @@ print("[BOOT] Starting module imports...", flush=True)
 
 import numpy as np
 
-from .key_sections import get_key_sections_for_query, should_boost_section
+from .key_sections import get_key_sections_for_query, should_boost_section, is_pinned_section, matches_combined_topic
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
@@ -54,6 +54,13 @@ MIN_SIMILARITY = 0.25  # Floor: discard results below this cosine similarity
 MAX_BOOST = 2.5        # Cap: prevent multiplicative boost inflation
 MAX_HISTORY = 10       # Max conversation turns (user+assistant pairs) to keep
 CANDIDATE_MULTIPLIER = 12  # Over-fetch factor before result-level dedupe
+# Exact key sections for an everyday wording can sit far down the raw ranking
+# (A12: SSA s130 at cosine 0.37, rank 276), out of reach of any capped boost, and
+# can fall below MIN_SIMILARITY (A1: RTA s42B at 0.22). They are pinned into the
+# results if their raw cosine clears this lower floor, which still keeps out a
+# listed section that has nothing to do with the question.
+PINNED_MIN_SIMILARITY = 0.15
+MAX_PINNED = 3  # At most this many pinned sections displace ranked results
 
 # Offline test/swarm switch: when set, no Anthropic call is ever made.
 STUB_LLM = os.getenv("BOWEN_STUB_LLM", "").strip().lower() in ("1", "true", "yes", "on")
@@ -183,9 +190,13 @@ print("[BOOT] Importing acts_registry...", flush=True)
 from .acts_registry import (
     detect_act_from_query, get_all_acts, has_registry_signal, ACTS_REGISTRY,
     REPEALED_TITLES, PARTIALLY_REPEALED_ACTS, count_in_force_acts,
-    detect_repealed_mentions, repealed_note,
+    detect_repealed_mentions, repealed_note, held_acts_for_query, titles_for_base_name,
 )
 print(f"[BOOT] Acts registry OK ({len(ACTS_REGISTRY)} acts)", flush=True)
+
+# Every in-force title, as /acts lists them, for the AVAILABLE ACTS section: the
+# model guessed "not held" for held Acts when it only knew the count.
+HELD_ACT_TITLES = sorted({a["title"] for a in get_all_acts()})
 
 # System prompt
 SYSTEM_PROMPT = f"""You are Bowen, a chatbot legal information assistant for New Zealand legislation.
@@ -201,7 +212,7 @@ Each user message arrives with a block headed "LEGISLATION EXCERPTS FROM DATABAS
 ## RULES
 1. You provide information, not legal advice.
 2. Answer only from the LEGISLATION EXCERPTS FROM DATABASE. Every rule, section number, time limit, amount, rate, entitlement, duty or offence you state must come from an excerpt you have been shown. If it is not in an excerpt, do not state it.
-3. If no excerpt governs the question, do not answer the legal question. Name the Act that probably governs it if you know it; say that you do not hold that Act, or did not retrieve the section that deals with this; point the person to legislation.govt.nz and to Community Law (communitylaw.org.nz) for free legal help; then stop and end with "SOURCES: none". On this path you must NOT:
+3. If no excerpt governs the question, do not answer the legal question. Name the Act that probably governs it if you know it; if that Act is on the list in AVAILABLE ACTS, say that you hold it but did not retrieve the section that deals with this, and say that you do not hold it only if it is not on that list; point the person to legislation.govt.nz and to Community Law (communitylaw.org.nz) for free legal help; then stop and end with "SOURCES: none". On this path you must NOT:
    a. summarise, outline or characterise what the Act provides, "in general terms", "generally" or otherwise;
    b. name its Parts, subparts or sections;
    c. state any entitlement, rate, test, duty or liability, even with a disclaimer attached ("I won't state that as the law" does not make it allowed);
@@ -287,7 +298,13 @@ For specific questions ("What is the bond limit?"): Answer directly with the pro
 Do NOT exhaustively list every related section. Cite what matters most. The user can always ask for more.
 
 ## AVAILABLE ACTS
-You hold the published text of {count_in_force_acts()} in-force NZ Acts, retrieved from legislation.govt.nz between March and May 2026. For each question you are shown only a handful of excerpts retrieved from them; an Act or section that is not in the excerpts was not retrieved for this question, and you must not fill the gap from memory. Some Acts people often ask about are not held, for example the Holidays Act 2003, the Minimum Wage Act 1983 and the Sale and Supply of Alcohol Act 2012. When users ask what you have access to, describe it accurately, without overstating or understating it.
+You hold the published text of {count_in_force_acts()} in-force NZ Acts, retrieved from legislation.govt.nz between March and May 2026; they are listed below. For each question you are shown only a handful of excerpts retrieved from them; an Act or section that is not in the excerpts was not retrieved for this question, and you must not fill the gap from memory.
+
+If the Act that governs the question is on this list, you HOLD it: say "I hold the X Act but didn't retrieve the section that deals with this". Say "I don't hold" ONLY for an Act that is not on this list. A line in the excerpts block, "ACTS BOWEN HOLDS THAT MATCH THIS QUESTION", names the listed Acts that match each question.
+
+You hold Acts only, no regulations or orders. Some things people often ask about are not held, for example the Holidays Act 2003, the Minimum Wage Act 1983, the Sale and Supply of Alcohol Act 2012, the Charities Act 2005, the End of Life Choice Act 2019 and the Residential Tenancies (Healthy Homes Standards) Regulations 2019. When users ask what you have access to, describe it accurately, without overstating or understating it.
+
+Acts you hold: {"; ".join(HELD_ACT_TITLES)}.
 
 ## CITATION FORMAT
 When citing an excerpt: "Under section X of the [Act title]..."
@@ -463,7 +480,8 @@ def search_similar(query: str, top_k: int = TOP_K, act_filter: str = None) -> Li
     query_embedding = embedding_model.encode(query, convert_to_numpy=True)
 
     # Calculate cosine similarities
-    similarities = np.dot(embeddings, query_embedding).copy()
+    raw_scores = np.dot(embeddings, query_embedding)
+    similarities = raw_scores.copy()
 
     query_lower = query.lower()
 
@@ -474,8 +492,16 @@ def search_similar(query: str, top_k: int = TOP_K, act_filter: str = None) -> Li
     boost_terms = ['purpose', 'interpretation', 'application', 'object', 'principle', 'definition']
     is_overview_question = any(q in query_lower for q in ['what is', 'what are', 'explain', 'overview', 'purpose of'])
 
+    # Best row per exact pinned (act, section), by raw score.
+    pin_rows = {}
+
     for i, meta in enumerate(metadata):
         raw_score = similarities[i]
+
+        if key_sections and raw_score >= PINNED_MIN_SIMILARITY and is_pinned_section(meta, key_sections):
+            pin_key = (meta.get("act_title", ""), meta.get("section_number", "").strip())
+            if pin_key not in pin_rows or raw_score > raw_scores[pin_rows[pin_key]]:
+                pin_rows[pin_key] = i
 
         # Skip chunks below minimum similarity (no point boosting junk)
         if raw_score < MIN_SIMILARITY:
@@ -557,6 +583,8 @@ def search_similar(query: str, top_k: int = TOP_K, act_filter: str = None) -> Li
         if len(top_indices) >= top_k:
             break
 
+    pinned = _apply_pins(top_indices, pin_rows, raw_scores, similarities, top_k)
+
     results = []
     for idx in top_indices:
         meta = metadata[idx]
@@ -568,16 +596,51 @@ def search_similar(query: str, top_k: int = TOP_K, act_filter: str = None) -> Li
             "section_heading": meta.get("section_heading", ""),
             "section_url": meta.get("section_url", ""),
             "act_url": meta.get("act_url", ""),
-            "score": float(similarities[idx])
+            "score": float(similarities[idx]),
+            "pinned": idx in pinned,
         })
 
     return results
 
 
+def _apply_pins(top_indices: list, pin_rows: dict, raw_scores, similarities, top_k: int) -> set:
+    """Guarantee the pinned key sections a place in top_indices (in place).
+
+    Missing pins, highest raw score first and at most MAX_PINNED, replace the
+    lowest-ranked results that are not themselves pinned; top_k is kept and
+    the act filter (score -1) is respected. Returns the pinned indices.
+    """
+    if not pin_rows:
+        return set()
+
+    def key(i):
+        return (metadata[i].get("act_title", ""), metadata[i].get("section_number", "").strip())
+
+    pin_keys = {k for k, i in pin_rows.items() if similarities[i] > -1}
+    protected = {i for i in top_indices if key(i) in pin_keys}
+    present = {key(i) for i in top_indices}
+    missing = sorted((pin_rows[k] for k in pin_keys if k not in present),
+                     key=lambda i: raw_scores[i], reverse=True)[:MAX_PINNED]
+
+    for idx in missing:
+        if len(top_indices) >= top_k:
+            drop = next((j for j in range(len(top_indices) - 1, -1, -1)
+                         if top_indices[j] not in protected), None)
+            if drop is None:
+                break
+            del top_indices[drop]
+        top_indices.append(idx)
+        protected.add(idx)
+
+    top_indices.sort(key=lambda i: similarities[i], reverse=True)
+    return protected
+
+
 NO_EXCERPTS_CONTEXT = (
     "No legislation excerpts were retrieved for this question. Do not answer it from memory: "
-    "name the Act that probably governs it if you know it, say that you do not hold it or did "
-    "not retrieve the relevant section, point to legislation.govt.nz and Community Law "
+    "name the Act that probably governs it if you know it; if it is on the list of Acts you "
+    "hold, say that you hold it but did not retrieve the relevant section, and say that you do "
+    "not hold it only if it is not on that list; point to legislation.govt.nz and Community Law "
     "(communitylaw.org.nz), and stop. Do not summarise or characterise what the Act says "
     "\"in general terms\", do not name its Parts or sections, do not state any entitlement, "
     "rate, test or liability even with a disclaimer, and give no other phone number or "
@@ -620,6 +683,32 @@ def build_context(results: List[dict]) -> str:
         parts.append(act_section)
 
     return "\n---\n\n".join(parts)
+
+
+MAX_HELD_LINE_ACTS = 6
+
+
+def held_acts_line(query: str, results: List[dict], detected_act: Optional[str] = None) -> str:
+    """Names the held Acts that match this question, so that the model does not
+    say "I don't hold" an Act it holds but did not retrieve (round 2, item 2).
+    The Acts retrieved are not listed (they are often unrelated, and their
+    headings are in the excerpts); the line only says they are held."""
+    titles = []
+    for title in titles_for_base_name(detected_act) + held_acts_for_query(query):
+        if title not in titles:
+            titles.append(title)
+    titles = titles[:MAX_HELD_LINE_ACTS]
+    if titles:
+        line = (f"ACTS BOWEN HOLDS THAT MATCH THIS QUESTION: {'; '.join(titles)}. If the answer "
+                "lies in one of these and its section is not in the excerpts below, say you hold "
+                "the Act but did not retrieve the section; do not say you don't hold it.")
+    else:
+        line = ("ACTS BOWEN HOLDS THAT MATCH THIS QUESTION: none. No held Act matched this "
+                "question by name or keyword; the Act may or may not be held, check the list "
+                "in your instructions.")
+    if results:
+        line += " Every Act in the excerpts below is held."
+    return line
 
 
 def build_repeal_notes(query: str) -> str:
@@ -741,7 +830,7 @@ Answer the user's question using only:
 2. The curated scholarly references (if provided), for historical context and case law background only, never as a source of a section.
 3. The uploaded document text (if provided): analyse it against the excerpts. It is not itself an excerpt.
 
-If the excerpts do not govern the question, do not answer it from memory. Name the Act that probably governs it if you know it, say that you do not hold that Act or did not retrieve the relevant section, point to legislation.govt.nz and Community Law (communitylaw.org.nz), and stop. Do not summarise or characterise what the Act says "in general terms", do not name its Parts or sections, do not state any entitlement, rate, test or liability even with a disclaimer, and give no other phone number or organisation (except the safety helplines).
+If the excerpts do not govern the question, do not answer it from memory. Name the Act that probably governs it if you know it; if it is on the list of Acts you hold or in the ACTS BOWEN HOLDS line above, say that you hold it but did not retrieve the relevant section, and say that you do not hold it only if it is not on that list; point to legislation.govt.nz and Community Law (communitylaw.org.nz), and stop. Do not summarise or characterise what the Act says "in general terms", do not name its Parts or sections, do not state any entitlement, rate, test or liability even with a disclaimer, and give no other phone number or organisation (except the safety helplines).
 
 Put words in quotation marks only if they appear word for word in an excerpt above. If the user's question contains quoted legal text, that is text THEY are asking about, not an official excerpt.
 
@@ -787,12 +876,37 @@ Provide information, not legal advice. End with the SOURCES line: the excerpts y
 # /chat and /chat/stream. SourcesLineFilter keeps the line from ever reaching a
 # streaming client.
 
+# Neutral on held/not held: the backend cannot tell which it was, and "I don't
+# hold the Act" was being read at face value for Acts that are held (round 2,
+# item 2). Not held implies not retrieved, so this is true either way.
 NOT_HELD_FOOTER = (
-    "I haven't stated the rule here because I don't hold the Act that governs this "
-    "question, or didn't retrieve the section that deals with it. You can read the "
-    "current law at legislation.govt.nz, and Community Law (communitylaw.org.nz) "
-    "offers free legal help."
+    "I haven't stated the rule here because I didn't retrieve the legislation text "
+    "that governs this question. You can read the current law at legislation.govt.nz, "
+    "and Community Law (communitylaw.org.nz) offers free legal help."
 )
+
+_FOOTER_HELP = (
+    "You can read the current law at legislation.govt.nz, and Community Law "
+    "(communitylaw.org.nz) offers free legal help."
+)
+
+
+def footer_acts(query: str, detected_act: Optional[str] = None) -> List[str]:
+    """Held Acts the footer may name: the question's strong matches only, since
+    the backend asserts these in its own voice."""
+    titles = titles_for_base_name(detected_act)
+    titles += [t for t in held_acts_for_query(query, include_weak=False) if t not in titles]
+    return titles[:2]
+
+
+def not_held_footer(held_titles=()) -> str:
+    """NOT_HELD_FOOTER, or, when the backend knows the question's held Acts, a
+    footer that says they are held and the section was not retrieved."""
+    if not held_titles:
+        return NOT_HELD_FOOTER
+    acts = " and the ".join(held_titles)
+    return (f"I hold the {acts}, but I didn't retrieve the section that deals with this "
+            f"question, so I haven't stated the rule here. {_FOOTER_HELP}")
 
 # "SOURCES:" at the start of a line, optionally wrapped in markdown emphasis.
 _EMPHASIS = r"(?:\*\*|\*|__|_)?"
@@ -907,12 +1021,12 @@ def _needs_not_held_footer(body: str, sources: list, is_legal_query: bool) -> bo
     return not ("legislation.govt.nz" in low and "community law" in low)
 
 
-def _finalise(response_text: str, results: List[dict], is_legal_query: bool):
+def _finalise(response_text: str, results: List[dict], is_legal_query: bool, held_titles=()):
     """(body, footer, sources). body has the SOURCES line removed; footer is
-    NOT_HELD_FOOTER or ""."""
+    not_held_footer(held_titles) or ""."""
     body, entries = _split_sources_line(response_text)
     sources = _match_sources(entries, results) if entries else []
-    footer = NOT_HELD_FOOTER if _needs_not_held_footer(body, sources, is_legal_query) else ""
+    footer = not_held_footer(held_titles) if _needs_not_held_footer(body, sources, is_legal_query) else ""
     return body, footer, sources
 
 
@@ -922,16 +1036,17 @@ def _join_footer(body: str, footer: str) -> str:
     return f"{body}\n\n{footer}" if body else footer
 
 
-def finalise_answer(response_text: str, results: List[dict], is_legal_query: bool) -> tuple[str, list[dict]]:
+def finalise_answer(response_text: str, results: List[dict], is_legal_query: bool,
+                    held_titles=()) -> tuple[str, list[dict]]:
     """Shared post-processing for /chat and /chat/stream.
 
     Returns (clean_text, sources). clean_text has the SOURCES line stripped and,
-    for a legal question with no usable source, NOT_HELD_FOOTER appended.
+    for a legal question with no usable source, the not-held footer appended.
     sources are the retrieved excerpts the model listed, in its order, deduped,
     each in the Source shape. A missing SOURCES line gives no sources: the
     retrieval hits are never shown as if the answer had used them.
     """
-    body, footer, sources = _finalise(response_text, results, is_legal_query)
+    body, footer, sources = _finalise(response_text, results, is_legal_query, held_titles)
     return _join_footer(body, footer), sources
 
 
@@ -1295,7 +1410,13 @@ _LEGAL_SIGNALS = re.compile(
     # fell through the gate, so no search ran and the answer came from memory.
     r'\bintimate\b|'
     r'\bphotos?\b|'
-    r'\bimages?\b)'
+    r'\bimages?\b|'
+
+    # Round 2 (2 Nov): "House seperation and unequal splits between partners"
+    # fell through the gate, so no search ran and the answer said the Property
+    # (Relationships) Act was not held. Misspelling included on purpose.
+    r'\bsep[ae]rat(?:e|ed|ing|ion)\b|'
+    r'\bsue\b)'
 )
 
 
@@ -1319,6 +1440,13 @@ def _is_legal_query(query: str, detected_act: str | None, session_id: str = "") 
     # enough of a legal signal to search. Without this the gate silently
     # tightens whenever detection does.
     if has_registry_signal(query):
+        return True
+
+    # A combined topic (whole words, every group) names the governing sections;
+    # "I want to have a pet, but the owner has refused" (live, 2 Nov) carried no
+    # other signal, so no search ran. The substring topics are not used here:
+    # "password" alone would make "I forgot my password" a legal question.
+    if matches_combined_topic(query):
         return True
 
     # If there's conversation history, check if any recent message was legal
@@ -1360,7 +1488,7 @@ def _retrieve_for_query(query: str, detected_act: str | None, session_id: str):
 
     # Retrieve 6; the answer's SOURCES line decides which are shown.
     results = search_similar(query, top_k=6, act_filter=detected_act)
-    context = build_context(results)
+    context = f"{held_acts_line(query, results, detected_act)}\n\n{build_context(results)}"
     notes = build_repeal_notes(query)
     if notes:
         context = f"{notes}\n\n{context}"
@@ -1441,7 +1569,8 @@ async def chat(request: ChatRequest, req: Request):
     )
 
     # Sources are the retrieved excerpts the answer says it used, nothing else.
-    response_text, source_dicts = finalise_answer(raw_text, results, is_legal_query)
+    response_text, source_dicts = finalise_answer(
+        raw_text, results, is_legal_query, footer_acts(query, detected_act))
     sources = [Source(**d) for d in source_dicts]
     _store_history(session_id, query, response_text)
 
@@ -1535,7 +1664,8 @@ async def chat_stream(request: ChatRequest, req: Request):
 
             # Same post-processing as /chat: strip the SOURCES line, keep only
             # the retrieved excerpts the answer used, add the not-held footer.
-            body, footer, sources = _finalise(filt.full_text, results, is_legal_query)
+            body, footer, sources = _finalise(filt.full_text, results, is_legal_query,
+                                              footer_acts(query, detected_act))
             tail = stream_tail(body, footer, filt.emitted)
             if tail:
                 yield f"data: {json.dumps({'type': 'token', 'text': tail})}\n\n"

@@ -1,10 +1,10 @@
 {
-  "note": "Baseline re-recorded 2026-09-28 against backend/tests/fixtures/mini rebuilt from the regenerated corpus (duplication fixed at source, parser matching div.prov exactly; see NOTES-duplication.md), CANDIDATE_MULTIPLIER=12, top_k=6. It was 44/55 on the previous fixture. known_misses are entries retrieval does not yet satisfy; they are xfail in test_golden_retrieval.py so an improvement shows up as XPASS rather than a failure. Entries in expected_pass are a regression lock: they must keep passing. Each known_miss records the act the detector chose, so wrong-act misses can be told apart from wrong-section ones.",
-  "recorded": "2026-09-28",
+  "note": "Baseline re-recorded 2026-09-28 against backend/tests/fixtures/mini rebuilt from the regenerated corpus (duplication fixed at source, parser matching div.prov exactly; see NOTES-duplication.md), CANDIDATE_MULTIPLIER=12, top_k=6. It was 44/55 on the previous fixture. known_misses are entries retrieval does not yet satisfy; they are xfail in test_golden_retrieval.py so an improvement shows up as XPASS rather than a failure. Entries in expected_pass are a regression lock: they must keep passing. Each known_miss records the act the detector chose, so wrong-act misses can be told apart from wrong-section ones. 2026-11-02 (round-two ticket): 8 everyday-wording entries added (A1, A5, A16, B5, D1 and the live pet, inspection and heating questions); all 8 pass with the key-section pins, so they join expected_pass. A3 (Fencing Act), A19 (RMA), B4 (LGOIMA), C8 (HDCA) and D4 (CCCFA) are not added because those Acts are not in the mini fixture.",
+  "recorded": "2026-11-02",
   "top_k": 6,
-  "total": 55,
-  "passed": 45,
-  "pass_rate": 0.818,
+  "total": 63,
+  "passed": 53,
+  "pass_rate": 0.841,
   "expected_pass": [
     "What is the maximum bond a landlord can require?",
     "How much notice do I have to give to end a periodic tenancy?",
@@ -50,7 +50,15 @@
     "What is the offence of obtaining by deception?",
     "What is the offence of wounding with intent?",
     "Who has the power to make laws in New Zealand?",
-    "How long is the term of Parliament in New Zealand?"
+    "How long is the term of Parliament in New Zealand?",
+    "My landlord wants to keep my bond because I put picture hooks in the wall. Can he?",
+    "How long does a council have to answer an Official Information Act request?",
+    "Can I record a phone call without telling the other person?",
+    "Under the Privacy Act, how many working days does an agency have to respond to my request for my personal information, and can it extend that time?",
+    "I bought a second-hand car from a dealer and the gearbox failed after three weeks. What are my rights?",
+    "I want to have a pet, but the owner has refused.",
+    "The owner didn't give any notice for the inspection and demanded I let them in, can I refuse?",
+    "Must a rental house have heating?"
   ],
   "known_misses": [
     {

@@ -4,8 +4,12 @@ key_sections.py
 Maps common legal topics to their key section numbers.
 This helps the RAG prioritise substantive rules over procedural sections.
 
-When a query matches a topic, these sections get boosted in search results.
+When a query matches a topic, these sections get boosted in search results,
+and a topic that names only a few sections has them pinned into the results
+(see PIN_MAX_SECTIONS and main.search_similar).
 """
+
+import re
 
 # Key sections for common topics
 # Format: "topic_keyword": [(act_short_name, section_numbers), ...]
@@ -299,6 +303,51 @@ KEY_SECTIONS = {
 }
 
 
+# === ROUND 2 (2026-11-02): everyday wording, whole words, every group ===
+# These words are too ambiguous for KEY_SECTIONS' substring match ("pet" is in
+# "petition"; a building inspection is not a tenancy one), so a topic here fires
+# only when each group has a whole-word match. Act ids follow the title-fragment
+# convention above.
+_TENANCY_WORDS = ("landlord", "landlords", "owner", "tenant", "tenants", "tenancy",
+                  "rental", "rent", "renting", "flat", "property manager")
+
+COMBINED_TOPICS = [
+    ((("pet", "pets"), _TENANCY_WORDS),
+     [("rta", ["42C", "42E", "42F"])]),
+    ((("inspection", "inspections", "inspect"), _TENANCY_WORDS + ("let them in",)),
+     [("rta", ["48"])]),
+    ((("heating", "heater", "heaters", "heat pump", "heatpump"), _TENANCY_WORDS),
+     [("rta", ["45", "138B"])]),
+    ((("fence", "fences", "fencing"),),
+     [("fencing act 1978", ["9", "10", "11"])]),
+    ((("noisy", "noise"),),
+     [("resource management act", ["326", "327", "328"])]),
+    ((("faulty", "broke", "broken", "failed", "defective", "stopped working"),
+      ("bought", "buy", "purchased", "dealer", "shop", "store", "retailer")),
+     [("consumer guarantees act", ["6", "7", "8"])]),
+    ((("debt collector", "debt collectors", "debt collection"),),
+     [("credit contracts and consumer finance act", ["41", "44A", "132A"])]),
+    ((("official information",), ("how long", "days", "working days", "time limit")),
+     [("official information act 1982", ["15"]),
+      ("local government official information and meetings act", ["13"])]),
+    ((("extend", "extension", "extensions"), ("privacy", "personal information")),
+     [("privacy act 2020", ["48"])]),
+]
+
+_COMBINED_PATTERNS = [
+    ([re.compile(r"\b(?:" + "|".join(re.escape(w) for w in group) + r")\b") for group in groups], entries)
+    for groups, entries in COMBINED_TOPICS
+]
+
+
+def matches_combined_topic(query: str) -> bool:
+    """True if a COMBINED_TOPICS entry fires: whole words, every group. Used by
+    the query gate; the substring topics in KEY_SECTIONS are too loose for that
+    ("I forgot my password" is not a legal question)."""
+    query_lower = query.lower().replace("-", " ")
+    return any(all(p.search(query_lower) for p in patterns) for patterns, _ in _COMBINED_PATTERNS)
+
+
 def get_key_sections_for_query(query: str) -> list:
     """
     Returns a list of (act_identifier, section_numbers) tuples
@@ -310,6 +359,10 @@ def get_key_sections_for_query(query: str) -> list:
     
     for topic, act_sections in KEY_SECTIONS.items():
         if topic in query_lower:
+            matched_sections.extend(act_sections)
+
+    for patterns, act_sections in _COMBINED_PATTERNS:
+        if all(p.search(query_lower) for p in patterns):
             matched_sections.extend(act_sections)
     
     return matched_sections
@@ -333,6 +386,9 @@ def should_boost_section(meta: dict, key_sections: list) -> float:
     act_short = meta.get('act_short_name', '').lower()
     section_num = meta.get('section_number', '').strip()
     
+    # Check every matched entry: "bond" and "picture hooks" both name the RTA,
+    # and stopping at the first would deny s42B its exact-section boost.
+    boost = 1.0
     for act_id, sections in key_sections:
         act_id_lower = act_id.lower()
         
@@ -341,7 +397,34 @@ def should_boost_section(meta: dict, key_sections: list) -> float:
             # Check if this is one of the key sections
             if section_num in sections:
                 return 2.0  # Strong boost for exact section match
-            else:
-                return 1.3  # Moderate boost for same act
+            boost = 1.3  # Moderate boost for same act
     
-    return 1.0  # No boost
+    return boost
+
+
+# A topic that lists this few sections names *the* governing sections, so
+# search_similar() pins them into the results even when their similarity is
+# low. Longer lists are ranges ("bond" -> ss 18-22B) and only boost.
+PIN_MAX_SECTIONS = 4
+
+
+def _act_matches_strictly(act_id: str, meta: dict) -> bool:
+    """Pinning bypasses ranking, so it needs a tighter act match than boosting:
+    a short id must equal act_short_name ("pa" is also inside "companies act"),
+    and a title fragment must be long enough to identify one Act."""
+    act_id = act_id.lower()
+    if act_id == meta.get('act_short_name', '').lower():
+        return True
+    return len(act_id) >= 8 and act_id in meta.get('act_title', '').lower()
+
+
+def is_pinned_section(meta: dict, key_sections: list) -> bool:
+    """True if this chunk is an exact section of a short key-section entry."""
+    section_num = meta.get('section_number', '').strip()
+    if not section_num:
+        return False
+    for act_id, sections in key_sections:
+        if (len(sections) <= PIN_MAX_SECTIONS and section_num in sections
+                and _act_matches_strictly(act_id, meta)):
+            return True
+    return False

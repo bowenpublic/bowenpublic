@@ -22,10 +22,12 @@ PNG_1PX = base64.b64encode(base64.b64decode(
 DEMO_QUESTION = "What is the maximum bond a landlord can require?"
 
 
-def expected_stub_text(app_module, is_legal=True):
+def expected_stub_text(app_module, is_legal=True, query=DEMO_QUESTION):
     """What the client sees for STUB_RESPONSE: SOURCES line stripped, and the
-    not-held footer added for a legal question (the stub cites nothing)."""
-    text, sources = app_module.finalise_answer(app_module.STUB_RESPONSE, [], is_legal)
+    not-held footer added for a legal question (the stub cites nothing). The
+    footer names the held Acts the question matches."""
+    held = app_module.footer_acts(query, app_module.detect_act_from_query(query))
+    text, sources = app_module.finalise_answer(app_module.STUB_RESPONSE, [], is_legal, held)
     assert sources == []
     return text
 

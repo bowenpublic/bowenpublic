@@ -6,6 +6,7 @@ Used by both the backend for act detection and served to frontend via API.
 """
 
 import re
+from difflib import SequenceMatcher
 from typing import List, Dict, Optional
 
 # Acts Registry - the single source of truth
@@ -1548,6 +1549,10 @@ _WEAK_KEYWORDS = frozenset({
                           # about dealing with government
     "council",     # Local Government 2002 — "stand for council" is the Local
                    # Electoral Act; "council" names the body, not the subject
+    "fine",        # Sentencing — "can a council fine me for a noisy party"
+                   # is the RMA; "fine" is also ordinary English (round 2, A19)
+    "children",    # Child Poverty Reduction — "who decides where the children
+                   # live" is the Care of Children Act (round 2, D3)
 })
 
 
@@ -1646,7 +1651,7 @@ def detect_act_from_query(query: str) -> Optional[str]:
     """
     candidates = [a for a in score_acts_for_query(query) if a["has_strong"]]
     if not candidates:
-        return None
+        return _detect_misspelt_title(query)
 
     best = candidates[0]
     if len(candidates) > 1:
@@ -1655,6 +1660,123 @@ def detect_act_from_query(query: str) -> Optional[str]:
             return None
 
     return best["base_name"]
+
+
+# --- Misspelt Act titles ------------------------------------------------------
+# "the consitution act of 1986" matched no keyword, so retrieval drifted to GST
+# and aviation and the answer said the Act was not held (round 2, item 3a). When
+# no keyword matched, the words just before "act" are compared with each Act's
+# base name. A near miss commits only if it is close (ratio >= cutoff), agrees
+# with any year given, and is the single best match.
+
+_TITLE_FUZZY_CUTOFF = 0.85
+_TITLE_FUZZY_MAX_WORDS = 5
+_TITLE_FUZZY_MIN_CHARS = 4  # "arm" vs "Arms" is too short to call a typo
+
+
+def _title_words(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9']+", text.lower())
+
+
+def _build_title_index():
+    index = []
+    for act_info in ACTS_REGISTRY.values():
+        if act_info.get("repealed"):
+            continue
+        base = _act_base_name(act_info)
+        words = _title_words(base)
+        if words and len(words) <= _TITLE_FUZZY_MAX_WORDS and len(" ".join(words)) >= _TITLE_FUZZY_MIN_CHARS:
+            index.append((" ".join(words), len(words), act_info["year"], base))
+    return index
+
+
+def _detect_misspelt_title(query: str) -> Optional[str]:
+    words = _title_words(query or "")
+    best_ratio, best_names = 0.0, set()
+    for pos, word in enumerate(words):
+        if word != "act" or pos == 0:
+            continue
+        after = words[pos + 1:pos + 3]
+        if after[:1] == ["of"]:
+            after = after[1:]
+        year = int(after[0]) if after and re.fullmatch(r"(1[89]|20)\d\d", after[0]) else None
+        before = words[max(0, pos - _TITLE_FUZZY_MAX_WORDS):pos]
+        for base_norm, n_words, act_year, base in _TITLE_INDEX:
+            if n_words > len(before) or (year is not None and year != act_year):
+                continue
+            ratio = SequenceMatcher(None, " ".join(before[-n_words:]), base_norm).ratio()
+            if ratio < _TITLE_FUZZY_CUTOFF or ratio < best_ratio:
+                continue
+            if ratio > best_ratio:
+                best_ratio, best_names = ratio, set()
+            best_names.add(base)
+    # Two Acts can share a base name (Local Government 1974 and 2002); that is
+    # still one filter. Two different names at the best ratio is a guess.
+    return best_names.pop() if len(best_names) == 1 else None
+
+
+_TITLE_INDEX = _build_title_index()
+
+
+# --- Held Acts that match a question --------------------------------------------
+# The model cannot tell "not retrieved" from "not held" and guessed "I don't hold
+# that Act" for held Acts (round 2, item 2). main.py names the held Acts that
+# match each question. These extra words are used for that line only, never for
+# detection, which filters retrieval: they are the everyday wordings that drew a
+# wrong "not held" (A4, A18, C8, D3 and the live Property (Relationships) case)
+# and two item 3 wordings (D1, D4).
+HELD_ACT_HINTS: Dict[str, List[str]] = {
+    "CGA": ["refund", "faulty", "broke", "broken", "defective", "warranty", "shop", "retailer", "bought"],
+    "CCCFA": ["debt collector", "debt collection"],
+    "LA": ["how long do i have to", "time limit", "too late to", "sue"],
+    "COCA": ["kid", "children", "child", "parenting", "day to day care"],
+    "PRA": ["separation", "seperation", "separating", "seperating", "split", "unequal split"],
+    "HDCA": ["intimate", "online", "post", "posted", "nude"],
+}
+
+
+def _held_pattern(keyword: str):
+    # Plural-tolerant: "refunds" must find the keyword "refund".
+    return re.compile(r"\b" + re.escape(keyword.lower()) + r"(?:s|es)?\b")
+
+
+def _build_held_index():
+    """Per in-force Act: (pattern, score, is_weak) for its keywords and hints."""
+    index = []
+    for short_name, act_info, _entries in _KEYWORD_INDEX:
+        entries = [(_held_pattern(kw), _keyword_score(kw.lower()), kw.lower() in _WEAK_KEYWORDS)
+                   for kw in act_info["keywords"]]
+        # Hints are broad ("post", "online", "shop"): enough to name an Act in
+        # the held-Acts line, never enough for the footer's own assertion.
+        entries += [(_held_pattern(w), _keyword_score(w), True)
+                    for w in HELD_ACT_HINTS.get(short_name, [])]
+        index.append((act_info["title"], entries))
+    return index
+
+
+_HELD_INDEX = _build_held_index()
+
+
+def held_acts_for_query(query: str, include_weak: bool = True) -> List[str]:
+    """Titles of in-force Acts whose keywords or hints the query mentions, best
+    first. include_weak=False drops Acts matched only by an ambiguous keyword
+    (the "police" -> Policing Act kind), for uses that must be precise."""
+    query_lower = (query or "").lower()
+    scored = []
+    for title, entries in _HELD_INDEX:
+        hits = [(score, weak) for pattern, score, weak in entries if pattern.search(query_lower)]
+        if hits and (include_weak or not all(weak for _s, weak in hits)):
+            scored.append((sum(score for score, _w in hits), title))
+    scored.sort(key=lambda x: -x[0])
+    return [title for _score, title in scored]
+
+
+def titles_for_base_name(base_name: Optional[str]) -> List[str]:
+    """In-force titles a detect_act_from_query() result filters to."""
+    if not base_name:
+        return []
+    return sorted({info["title"] for info in ACTS_REGISTRY.values()
+                   if not info.get("repealed") and _act_base_name(info) == base_name})
 
 
 def get_all_acts() -> List[Dict]:
