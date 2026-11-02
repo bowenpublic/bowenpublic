@@ -383,8 +383,9 @@ def test_debug_search_available_when_debug_enabled(client, app_module, monkeypat
 
 @pytest.mark.parametrize("path", ["/admin/logs", "/admin/stats"])
 def test_admin_requires_token(client, path):
-    assert client.get(path).status_code == 422          # token param missing
-    assert client.get(path, params={"token": "wrong"}).status_code == 401
+    assert client.get(path).status_code == 422          # header missing
+    assert client.get(path, params={"token": "wrong"}).status_code == 422   # URL token no longer accepted
+    assert client.get(path, headers={"X-Admin-Token": "wrong"}).status_code == 401
 
 
 # --- query log carries no network identifier ---------------------------------
@@ -425,7 +426,7 @@ def test_admin_logs_strips_legacy_ip(client, log_dir):
               "query": "q", "response": "r", "detected_act": None,
               "sources_count": 0, "response_time_ms": 1}
     (log_dir / "queries.jsonl").write_text(json.dumps(legacy) + "\n")
-    body = client.get("/admin/logs", params={"token": "test-admin-token"}).json()
+    body = client.get("/admin/logs", headers={"X-Admin-Token": "test-admin-token"}).json()
     assert body["total"] == 1
     assert "ip" not in body["entries"][0]
 
@@ -438,7 +439,7 @@ def test_admin_stats_by_month(client, log_dir):
         {"timestamp": "2026-04-01T01:00:00Z", "session_id": "s2", "detected_act": None},
     ]
     (log_dir / "queries.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-    body = client.get("/admin/stats", params={"token": "test-admin-token"}).json()
+    body = client.get("/admin/stats", headers={"X-Admin-Token": "test-admin-token"}).json()
     assert set(body) == {"total_queries", "total_sessions", "top_acts", "by_month"}
     assert body["total_queries"] == 4
     assert body["total_sessions"] == 2
@@ -447,5 +448,5 @@ def test_admin_stats_by_month(client, log_dir):
 
 
 def test_admin_stats_empty(client, log_dir):
-    body = client.get("/admin/stats", params={"token": "test-admin-token"}).json()
+    body = client.get("/admin/stats", headers={"X-Admin-Token": "test-admin-token"}).json()
     assert body == {"total_queries": 0, "total_sessions": 0, "top_acts": {}, "by_month": {}}

@@ -28,7 +28,7 @@ from datetime import datetime
 
 print("[BOOT] Core imports OK", flush=True)
 
-from fastapi import FastAPI, HTTPException, APIRouter, Request, Query
+from fastapi import FastAPI, HTTPException, APIRouter, Request, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -1140,8 +1140,8 @@ async def health():
 
 
 @app.get("/admin/logs")
-async def get_logs(token: str = Query(..., description="Admin token")):
-    """Download query logs. Requires ADMIN_TOKEN."""
+async def get_logs(token: str = Header(..., alias="X-Admin-Token", description="Admin token")):
+    """Download query logs. Requires ADMIN_TOKEN in the X-Admin-Token header (never the URL, so it stays out of access logs)."""
     if not ADMIN_TOKEN or token != ADMIN_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid admin token")
 
@@ -1164,8 +1164,8 @@ async def get_logs(token: str = Query(..., description="Admin token")):
 
 
 @app.get("/admin/stats")
-async def get_stats(token: str = Query(..., description="Admin token")):
-    """Get quick stats. Requires ADMIN_TOKEN."""
+async def get_stats(token: str = Header(..., alias="X-Admin-Token", description="Admin token")):
+    """Get quick stats. Requires ADMIN_TOKEN in the X-Admin-Token header."""
     if not ADMIN_TOKEN or token != ADMIN_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid admin token")
 

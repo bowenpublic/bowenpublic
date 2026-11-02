@@ -32,13 +32,15 @@ Each chat request appends one JSON line to `logs/queries.jsonl`:
 
 **Option A: Download endpoint (recommended)**
 ```
-GET /admin/logs?token=YOUR_SECRET
+GET /admin/logs
+X-Admin-Token: YOUR_SECRET
 ```
 Returns the JSONL file. Open in any text editor, or import to Excel/Google Sheets.
 
 **Option B: Simple stats endpoint**
 ```
-GET /admin/stats?token=YOUR_SECRET
+GET /admin/stats
+X-Admin-Token: YOUR_SECRET
 ```
 Returns: total queries, queries today, top Acts asked about.
 
