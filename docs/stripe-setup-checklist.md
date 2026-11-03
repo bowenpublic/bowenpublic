@@ -1,38 +1,52 @@
 # Stripe Donations Setup Checklist
 
-## 1. Create Product + Price
+Account: Bowen Public Charitable Trust (set up October 2026). The old keys
+from Joe's personal account expired and must not be reused.
 
-- [ ] Go to **Products** → **Add product**
-- [ ] Name: "Bowen Public Donation"
-- [ ] Create Price(s) — either:
-  - One-time fixed amounts (e.g. $5, $10, $25) → gives a `price_xxx` ID for each
-  - Or a single price with custom amount enabled
-- [ ] Copy each `price_id`
+## What the code actually needs
 
-## 2. Create Webhook Endpoint
+The backend (`backend/app/main.py`, "Stripe Donation Endpoints") uses only:
 
-- [ ] Go to **Developers** → **Webhooks** → **Add endpoint**
-- [ ] URL: `https://your-production-domain.com/api/stripe/webhook`
-- [ ] Select events:
-  - `checkout.session.completed`
-  - `payment_intent.succeeded` (optional)
-- [ ] Copy the **Webhook Signing Secret** (`whsec_xxx`)
+- `STRIPE_SECRET_KEY` — `sk_test_...` locally, `sk_live_...` in production
+- `STRIPE_WEBHOOK_SECRET` — `whsec_...` for the endpoint that receives events
+- `FRONTEND_URL` (optional) — e.g. `https://bowenpublic.com`, used for the
+  success/cancel redirects. Without it the backend uses the request Origin if
+  it is an allowed CORS origin.
 
-## 3. Env Vars
+`STRIPE_PUBLISHABLE_KEY` and `STRIPE_PRICE_ID` are **not** used. Checkout is
+created server-side with an inline price for whatever amount the donor types,
+so no Product or Price needs to exist in the dashboard.
 
-- [ ] `STRIPE_SECRET_KEY` — `sk_live_xxx`
-- [ ] `STRIPE_PUBLISHABLE_KEY` — `pk_live_xxx`
-- [ ] `STRIPE_WEBHOOK_SECRET` — `whsec_xxx`
-- [ ] `STRIPE_PRICE_ID` — `price_xxx` (or multiple if tiered)
+## 1. Keys (test mode first)
 
-## 4. Local Testing
+- [ ] Dashboard → Developers → API keys, toggle **Test mode** → copy the secret key
+- [ ] Put it in `backend/.env` as `STRIPE_SECRET_KEY`
+- [ ] Run `backend/venv/bin/python -m pytest tests/stripe -v -s` (see `tests/stripe/README.md`)
 
-- [ ] Install Stripe CLI: `brew install stripe/stripe-cli/stripe`
-- [ ] Run `stripe login`
-- [ ] Forward webhooks: `stripe listen --forward-to localhost:8105/api/stripe/webhook`
-- [ ] Use the local `whsec_xxx` for dev
+## 2. Webhook endpoint (production)
 
-## 5. Success / Cancel URLs
+- [ ] Developers → Webhooks → Add endpoint
+- [ ] URL: `https://<railway-backend-host>/api/stripe/webhook`
+- [ ] Events: `checkout.session.completed`
+- [ ] Copy the signing secret (`whsec_...`) into Railway as `STRIPE_WEBHOOK_SECRET`
 
-- [ ] Decide post-payment redirect (e.g. `https://bowenpublic.com?donated=true`)
-- [ ] Decide cancel redirect (e.g. `https://bowenpublic.com`)
+## 3. Production env vars (Railway backend service)
+
+- [ ] `STRIPE_SECRET_KEY` = `sk_live_...`
+- [ ] `STRIPE_WEBHOOK_SECRET` = `whsec_...` from step 2
+- [ ] `FRONTEND_URL` = `https://bowenpublic.com`
+- [ ] `ALLOWED_ORIGINS` includes `https://bowenpublic.com`
+
+## 4. Local webhook testing
+
+- [ ] `stripe login` (choose the Trust account)
+- [ ] `stripe listen --forward-to localhost:8105/api/stripe/webhook`
+- [ ] Use the `whsec_` it prints as `STRIPE_WEBHOOK_SECRET` in `backend/.env`
+- [ ] `stripe trigger checkout.session.completed` and watch for `[DONATION]` in the backend log
+
+## 5. Go-live check
+
+- [ ] Account shows charges and payouts enabled (the test suite asserts this with a live key)
+- [ ] Bank account for payouts is the Trust's
+- [ ] Statement descriptor reads as Bowen Public
+- [ ] One real $1 donation on bowenpublic.com/donate, then refund it from the dashboard
