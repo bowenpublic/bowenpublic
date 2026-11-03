@@ -49,3 +49,21 @@ DIRECTOR-LOG.md
 
 # Brand assets served by the frontend
 !frontend/public/*.png
+
+# Write-ups quoting what members of the public typed (repo is public; see docs/2026-11-03-data-report-audit.md)
+docs/trust-traffic-2026-11-03.md
+docs/session-8514bf3a-raw-2026-11-03.md
+docs/session-*-raw-*.md
+
+# Links to the usage record outside the tree (see scripts/README.md)
+data/archive
+data/fire
+data/state
+
+# Local working files not for the public repo (Joe, 4 Nov 2026)
+.claude/
+docs/benchmark-theory.md
+docs/bowen-title.svg
+docs/commissions/
+frontend/tsconfig.tsbuildinfo
+tests/stripe/
