@@ -7,6 +7,12 @@ This helps the RAG prioritise substantive rules over procedural sections.
 When a query matches a topic, these sections get boosted in search results,
 and a topic that names only a few sections has them pinned into the results
 (see PIN_MAX_SECTIONS and main.search_similar).
+
+Every section number here was checked against the heading and text of that
+Act in the index (audit of 2026-11-12). A topic whose governing Act is not
+held has no entry: a neighbouring Act's sections pinned in its place read as
+the law on the topic and are not. backend/tests/test_key_sections_audit.py
+checks that every listed section exists.
 """
 
 import re
@@ -26,11 +32,9 @@ KEY_SECTIONS = {
     "bond limit": [
         ("rta", ["18"]),
     ],
-    "notice period": [
-        ("rta", ["51", "52", "53", "54", "55", "56", "57"]),
-    ],
+    # "notice period" is in COMBINED_TOPICS: an employee asks about one too.
     "notice to end tenancy": [
-        ("rta", ["51", "53", "55"]),
+        ("rta", ["51", "60A"]),
     ],
     "landlord entry": [
         ("rta", ["48"]),
@@ -39,7 +43,7 @@ KEY_SECTIONS = {
         ("rta", ["48"]),
     ],
     "rent increase": [
-        ("rta", ["24", "25", "26"]),
+        ("rta", ["24", "25"]),
     ],
     "tenancy termination": [
         ("rta", ["50", "51", "53", "55", "59", "60"]),
@@ -47,30 +51,23 @@ KEY_SECTIONS = {
     "90 day notice": [
         ("rta", ["51"]),
     ],
+    # s51(2) is the 42-day notice; s55 is termination by the Tribunal.
     "42 day notice": [
-        ("rta", ["51", "55"]),
+        ("rta", ["51"]),
     ],
+    # s13A healthy homes statement, s45/s66I the duty, s123A records, s138B
+    # the standards.
     "healthy homes": [
-        ("rta", ["45", "45A", "45B", "66I", "66J"]),
+        ("rta", ["13A", "45", "66I", "123A", "138B"]),
     ],
-    "flatmates": [
-        ("rta", ["10A", "10B"]),
-    ],
-    "flatmate": [
-        ("rta", ["10A", "10B"]),
-    ],
-    
+    # No "flatmate" entry: the RTA has no flatmate sections (the old entry
+    # named ss 10A-10B, which do not exist).
+
     # === EMPLOYMENT ===
-    # ERA = Employment Relations Act, HA = Holidays Act (not in current corpus)
-    "minimum wage": [
-        ("era", ["131"]),
-    ],
-    "sick leave": [
-        ("era", ["63", "64", "65"]),
-    ],
-    "annual leave": [
-        ("era", ["16", "17", "18", "19", "20", "21"]),
-    ],
+    # ERA = Employment Relations Act. Leave, public holidays and the minimum
+    # wage are set by the Holidays Act 2003, the Parental Leave and Employment
+    # Protection Act 1987 and the Minimum Wage Act 1983, none of them held, so
+    # those topics have no entry.
     "90 day trial": [
         ("era", ["67A", "67B"]),
     ],
@@ -84,21 +81,12 @@ KEY_SECTIONS = {
         ("era", ["103", "103A"]),
     ],
     "redundancy": [
-        ("era", ["103", "103A", "104"]),
-    ],
-    "parental leave": [
-        ("era", ["67", "68", "69", "70"]),
+        ("era", ["103", "103A"]),
     ],
     "employee vs contractor": [
         ("era", ["6"]),
     ],
-    "public holiday": [
-        ("era", ["44", "45", "46", "47", "48", "49", "50"]),
-    ],
-    "bereavement leave": [
-        ("era", ["69", "70", "71"]),
-    ],
-    
+
     # === BUILDING ===
     # BA = Building Act
     "building consent": [
@@ -111,12 +99,14 @@ KEY_SECTIONS = {
         ("ba", ["41", "42"]),
     ],
     "building warrant": [
-        ("ba", ["108", "109", "110", "111", "112"]),
+        ("ba", ["100", "108", "108A", "109", "110", "111"]),
     ],
+    # s96 certificate of acceptance and s164 notice to fix deal with work done
+    # without consent; ss 124-128 (dangerous buildings) do not.
     "unconsented work": [
-        ("ba", ["40", "41", "124", "125", "126", "127", "128"]),
+        ("ba", ["40", "41", "96", "97", "99", "164"]),
     ],
-    
+
     # === COMPANIES ===
     # CA = Companies Act
     "director duties": [
@@ -129,7 +119,7 @@ KEY_SECTIONS = {
         ("ca", ["135", "136", "380"]),
     ],
     "minority shareholder": [
-        ("ca", ["174", "175", "176"]),
+        ("ca", ["165", "174", "175"]),
     ],
     "oppression": [
         ("ca", ["174", "175"]),
@@ -140,20 +130,21 @@ KEY_SECTIONS = {
     "creditor priority": [
         ("ca", ["312", "313"]),
     ],
-    
+
     # === CONSUMER ===
-    # FTA = Fair Trading Act (Consumer Guarantees Act not in corpus)
+    # Guarantees and remedies are in the Consumer Guarantees Act; the Fair
+    # Trading Act numbers once listed here were CGA numbers applied to the FTA.
     "faulty product": [
-        ("fta", ["5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18"]),
+        ("consumer guarantees act", ["6", "7", "16", "18", "19"]),
     ],
     "consumer guarantee": [
-        ("fta", ["5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18"]),
+        ("consumer guarantees act", ["5", "5A", "6", "7", "8", "9", "10", "11", "12", "13", "16", "18"]),
     ],
     "refund": [
-        ("fta", ["18", "19", "20", "21", "22", "23"]),
+        ("consumer guarantees act", ["18", "20", "21", "22", "23"]),
     ],
     "repair or replace": [
-        ("fta", ["18", "19", "20", "21"]),
+        ("consumer guarantees act", ["18", "19"]),
     ],
     "misleading conduct": [
         ("fta", ["9", "10", "11", "12", "12A", "13", "14"]),
@@ -161,7 +152,7 @@ KEY_SECTIONS = {
     "unfair contract": [
         ("fta", ["26A", "26B", "26C", "26D"]),
     ],
-    
+
     # === PRIVACY ===
     # PA = Privacy Act 2020, OIA = Official Information Act
     "privacy principle": [
@@ -171,23 +162,24 @@ KEY_SECTIONS = {
         ("pa", ["114", "115", "116", "117", "118"]),
     ],
     "access to information": [
-        ("pa", ["49", "50", "51", "52", "53", "54", "55"]),
+        ("pa", ["40", "44", "45", "46", "49", "50", "51", "52", "53"]),
         ("oia", ["12", "13", "14", "15", "16", "17", "18"]),
     ],
+    # There is no right to deletion; a correction request (s59) is the route.
     "delete my information": [
-        ("pa", ["58", "59", "60"]),
+        ("pa", ["59"]),
     ],
-    
+
     # === HEALTH & SAFETY ===
     # HSWA = Health and Safety at Work Act
     "pcbu duties": [
         ("hswa", ["36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46"]),
     ],
     "refuse unsafe work": [
-        ("hswa", ["83", "84", "85"]),
+        ("hswa", ["83", "84"]),
     ],
     "notifiable event": [
-        ("hswa", ["23", "24", "25", "26", "56", "57"]),
+        ("hswa", ["23", "24", "25", "56", "57"]),
     ],
     "officer duties": [
         ("hswa", ["44"]),
@@ -195,7 +187,7 @@ KEY_SECTIONS = {
     "worker duties": [
         ("hswa", ["45", "46"]),
     ],
-    
+
     # === RMA ===
     # RMA = Resource Management Act
     "resource consent": [
@@ -219,9 +211,10 @@ KEY_SECTIONS = {
     "appeal resource consent": [
         ("rma", ["120", "121"]),
     ],
-    
+
     # === CRIMINAL ===
-    # CA1961 = Crimes Act 1961
+    # CA1961 = Crimes Act 1961. No "diversion" entry: police diversion is not
+    # statutory, and the word also means a water diversion under the RMA.
     "self defence": [
         ("ca1961", ["48"]),
     ],
@@ -229,31 +222,28 @@ KEY_SECTIONS = {
         ("ca1961", ["188", "189", "190", "191", "192", "193", "194", "195", "196"]),
     ],
     "theft": [
-        ("ca1961", ["219", "220", "221", "222", "223", "224", "225", "226", "227", "228"]),
+        ("ca1961", ["219", "220", "220AA", "220A", "221", "222", "223", "226", "227", "228"]),
     ],
-    "diversion": [
-        ("ca1961", ["379", "380"]),
-    ],
+    # Sentencing Act 2002; its ss 8 and 9 are missing from the index.
     "sentencing": [
-        ("ca1961", ["7", "8", "9", "10", "11", "12", "13", "14", "15", "16"]),
+        ("sentencing act 2002", ["7", "8A", "9A", "10", "10A"]),
     ],
-    
+
     # === PROPERTY ===
-    # PLA = Property Law Act
+    # PLA = Property Law Act. Part 3 (mortgages) starts at s75; ss 119-122 are
+    # the notice before exercising powers, s176 the duty on a mortgagee sale.
     "mortgage": [
-        ("pla", ["73", "74", "75", "76", "77", "78", "79", "80", "81", "82", "83", "84", "85", "86", "87", "88", "89", "90", "91", "92", "93", "94", "95", "96", "97", "98", "99", "100", "101", "102", "103", "104", "105", "106", "107", "108", "109", "110", "111", "112", "113", "114", "115", "116", "117", "118", "119"]),
+        ("pla", [str(n) for n in range(75, 123)] + ["176", "185"]),
     ],
-    "lease": [
-        ("pla", ["206", "207", "208", "209", "210", "211", "212", "213", "214", "215", "216", "217", "218", "219", "220", "221", "222", "223", "224", "225", "226", "227", "228", "229", "230", "231", "232", "233", "234", "235", "236", "237", "238", "239", "240", "241", "242", "243", "244", "245", "246", "247", "248", "249", "250", "251", "252", "253", "254", "255", "256", "257", "258", "259", "260", "261", "262", "263", "264", "265", "266", "267", "268", "269", "270", "271", "272", "273", "274", "275", "276", "277", "278", "279", "280", "281", "282", "283", "284", "285", "286", "287", "288", "289", "290", "291", "292", "293", "294", "295", "296", "297", "298", "299", "300", "301", "302", "303", "304", "305", "306", "307", "308", "309", "310", "311", "312", "313", "314", "315", "316", "317", "318", "319", "320", "321", "322", "323", "324", "325", "326", "327", "328", "329", "330", "331", "332", "333", "334", "335", "336", "337", "338", "339", "340", "341", "342", "343", "344", "345", "346", "347", "348", "349", "350"]),
-    ],
+    # "lease" is in COMBINED_TOPICS: as a substring it fired on "please".
     "easement": [
-        ("pla", ["289", "290", "291", "292", "293", "294", "295", "296", "297", "298"]),
+        ("pla", [str(n) for n in range(291, 301)] + ["313", "317"]),
     ],
 
     # === TESTING GATE (2026-11-01): everyday wording ===
     # Act identifiers here are lower-case fragments of the full act_title, not
-    # short names: should_boost_section() substring-matches, and a short id like
-    # "lea" or "ssa" would also match unrelated titles.
+    # short names: a short id like "lea" or "ssa" names no Act in the strict
+    # match (_act_matches_strictly) unless it equals that Act's short name.
     "picture hooks": [
         ("rta", ["42A", "42B"]),
     ],
@@ -311,6 +301,28 @@ KEY_SECTIONS = {
 _TENANCY_WORDS = ("landlord", "landlords", "owner", "tenant", "tenants", "tenancy",
                   "rental", "rent", "renting", "flat", "property manager")
 
+# Unqualified legal practice (ticket 2026-11-12). "legal advice" alone is in
+# ordinary questions ("can I get legal advice about my tenancy"), so it fires
+# only beside a word for someone who is not a lawyer.
+_NOT_A_LAWYER = ("non lawyer", "non lawyers", "not a lawyer", "not lawyers",
+                 "not being a lawyer", "isn't a lawyer", "unqualified",
+                 "lawyer's title", "lawyer’s title", "lawyers title", "title of lawyer",
+                 "ai", "artificial intelligence", "chatbot", "chatbots",
+                 "chat bot", "accountant", "accountants", "paralegal", "paralegals")
+_LEGAL_SERVICES = ("legal advice", "legal services", "legal service", "legal work",
+                   "practise law", "practice law", "practising law", "practicing law")
+_RESERVED_WORK = ("reserved area of work", "reserved areas of work", "reserved legal work",
+                  "unauthorised practice", "unauthorized practice",
+                  "unqualified practice", "unqualified legal practice")
+_LCA = "lawyers and conveyancers act"
+# s24 (the reserved-areas offence) and the s6 definition of reserved areas of
+# work rank below the top results on similarity, so they are pinned (two pins,
+# within main.MAX_PINNED). ss 21, 22, 23 and 27 rank well once boosted; listing
+# five sections keeps that entry over PIN_MAX_SECTIONS, so they are not pinned
+# and cannot displace the two that need it.
+_LCA_ENTRIES = [(_LCA, ["24", "6"]),
+                (_LCA, ["21", "22", "23", "24", "27"])]
+
 COMBINED_TOPICS = [
     ((("pet", "pets"), _TENANCY_WORDS),
      [("rta", ["42C", "42E", "42F"])]),
@@ -332,6 +344,21 @@ COMBINED_TOPICS = [
       ("local government official information and meetings act", ["13"])]),
     ((("extend", "extension", "extensions"), ("privacy", "personal information")),
      [("privacy act 2020", ["48"])]),
+    # === AUDIT (2026-11-12): moved from KEY_SECTIONS, whole words ===
+    # An employee has a notice period too.
+    ((("notice period", "notice periods"), _TENANCY_WORDS),
+     [("rta", ["51", "52", "53", "54", "55", "56"])]),
+    # Part 4 PLA leases (ss 206-274). RTA s142 disapplies Part 4 to residential
+    # tenancies, so a plain "lease" is not enough: it needs a commercial word,
+    # or the lessor/lessee wording residential tenants rarely use.
+    ((("lease", "leases", "leased", "sublease", "lessee", "lessees", "lessor", "lessors"),
+      ("commercial", "business", "shop", "office", "retail", "warehouse", "industrial",
+       "lessee", "lessees", "lessor", "lessors")),
+     [("pla", [str(n) for n in range(206, 275)])]),
+    ((_NOT_A_LAWYER, _LEGAL_SERVICES), _LCA_ENTRIES),
+    ((_RESERVED_WORK,), _LCA_ENTRIES),
+    # "reserved area" alone is also a park or a fishery.
+    ((("reserved area", "reserved areas"), ("lawyer", "lawyers", "legal")), _LCA_ENTRIES),
 ]
 
 _COMBINED_PATTERNS = [
@@ -356,7 +383,7 @@ def get_key_sections_for_query(query: str) -> list:
     # "90-day trial" must match the topic "90 day trial".
     query_lower = query.lower().replace("-", " ")
     matched_sections = []
-    
+
     for topic, act_sections in KEY_SECTIONS.items():
         if topic in query_lower:
             matched_sections.extend(act_sections)
@@ -364,41 +391,39 @@ def get_key_sections_for_query(query: str) -> list:
     for patterns, act_sections in _COMBINED_PATTERNS:
         if all(p.search(query_lower) for p in patterns):
             matched_sections.extend(act_sections)
-    
+
     return matched_sections
 
 
 def should_boost_section(meta: dict, key_sections: list) -> float:
     """
     Returns a boost multiplier (1.0 = no boost, >1.0 = boost).
-    
+
     Args:
         meta: The chunk metadata containing act_title, act_short_name, section_number
         key_sections: List of (act_identifier, section_numbers) from get_key_sections_for_query
-    
+
     Returns:
-        Boost multiplier (1.5 for exact match, 1.2 for act match, 1.0 otherwise)
+        Boost multiplier (2.0 for exact match, 1.3 for act match, 1.0 otherwise)
     """
     if not key_sections:
         return 1.0
-    
-    act_title = meta.get('act_title', '').lower()
-    act_short = meta.get('act_short_name', '').lower()
+
     section_num = meta.get('section_number', '').strip()
-    
+
     # Check every matched entry: "bond" and "picture hooks" both name the RTA,
     # and stopping at the first would deny s42B its exact-section boost.
     boost = 1.0
     for act_id, sections in key_sections:
-        act_id_lower = act_id.lower()
-        
-        # Check if this chunk is from the relevant act
-        if act_id_lower in act_title or act_id_lower in act_short:
+        # The strict match, as for pins: a substring match let "ca" boost 35
+        # Acts ("lawyers and conveyancers act"), "rma" every title with
+        # "information" in it, and "era" six Acts.
+        if _act_matches_strictly(act_id, meta):
             # Check if this is one of the key sections
-            if section_num in sections:
+            if section_num in sections and _is_key_chunk(act_id, section_num, meta):
                 return 2.0  # Strong boost for exact section match
             boost = 1.3  # Moderate boost for same act
-    
+
     return boost
 
 
@@ -408,10 +433,44 @@ def should_boost_section(meta: dict, key_sections: list) -> float:
 PIN_MAX_SECTIONS = 4
 
 
+# A long section (an interpretation section runs to many chunks) is named for
+# one definition in it. Only the chunk holding that text is boosted and pinned:
+# boosting every chunk let the definitions crowd the rule out of the results,
+# and the pin keeps the best-scoring chunk, which was another definition.
+# (act id, section) -> lower-case text the chunk must contain.
+KEY_CHUNK_TEXT = {
+    ("lawyers and conveyancers act", "6"): "reserved areas of work means",
+}
+
+
+def _is_key_chunk(act_id: str, section_num: str, meta: dict) -> bool:
+    needle = KEY_CHUNK_TEXT.get((act_id.lower(), section_num))
+    return needle is None or needle in meta.get('text', '').lower()
+
+
+# Pins exempt from main.PINNED_MIN_SIMILARITY. That floor stops a loose
+# substring topic pinning a section that has nothing to do with the question.
+# "Can an AI chatbot give legal advice in New Zealand?" names no Act and scores
+# 0.13 against s24, under the floor, yet s24 is the section that answers it
+# (ticket 2026-11-12); the topic's whole-word triggers are the safeguard here.
+PIN_WITHOUT_FLOOR = {
+    ("lawyers and conveyancers act", "24"),
+    ("lawyers and conveyancers act", "6"),
+}
+
+
+def pin_ignores_floor(meta: dict) -> bool:
+    """True if this chunk's pin is exempt from the similarity floor. Call only
+    for a chunk is_pinned_section() has already accepted."""
+    section_num = meta.get('section_number', '').strip()
+    return any(section_num == sec and _act_matches_strictly(act_id, meta)
+               for act_id, sec in PIN_WITHOUT_FLOOR)
+
+
 def _act_matches_strictly(act_id: str, meta: dict) -> bool:
-    """Pinning bypasses ranking, so it needs a tighter act match than boosting:
-    a short id must equal act_short_name ("pa" is also inside "companies act"),
-    and a title fragment must be long enough to identify one Act."""
+    """Used for both boosting and pinning: a short id must equal act_short_name
+    ("pa" is also inside "companies act"), and a title fragment must be long
+    enough to identify one Act."""
     act_id = act_id.lower()
     if act_id == meta.get('act_short_name', '').lower():
         return True
@@ -425,6 +484,7 @@ def is_pinned_section(meta: dict, key_sections: list) -> bool:
         return False
     for act_id, sections in key_sections:
         if (len(sections) <= PIN_MAX_SECTIONS and section_num in sections
-                and _act_matches_strictly(act_id, meta)):
+                and _act_matches_strictly(act_id, meta)
+                and _is_key_chunk(act_id, section_num, meta)):
             return True
     return False

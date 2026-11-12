@@ -21,7 +21,8 @@ print("[BOOT] Starting module imports...", flush=True)
 
 import numpy as np
 
-from .key_sections import get_key_sections_for_query, should_boost_section, is_pinned_section, matches_combined_topic
+from .key_sections import (get_key_sections_for_query, should_boost_section, is_pinned_section,
+                           matches_combined_topic, pin_ignores_floor)
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
@@ -61,6 +62,11 @@ CANDIDATE_MULTIPLIER = 12  # Over-fetch factor before result-level dedupe
 # listed section that has nothing to do with the question.
 PINNED_MIN_SIMILARITY = 0.15
 MAX_PINNED = 3  # At most this many pinned sections displace ranked results
+# Sections a question names by number ("sections 25 and 27 of the ... Act")
+# are fetched by exact (act, section) and placed ahead of ranked results.
+MAX_EXPLICIT_SECTIONS = 6
+MAX_SECTION_RANGE = 6           # "ss 24 to 26" is expanded; a wider range is not
+MAX_CHUNKS_PER_SECTION = 2      # Long sections (LCA s 6 has 19 chunks) keep their best two
 
 # Offline test/swarm switch: when set, no Anthropic call is ever made.
 STUB_LLM = os.getenv("BOWEN_STUB_LLM", "").strip().lower() in ("1", "true", "yes", "on")
@@ -72,6 +78,9 @@ STUB_RESPONSE = (
 
 # In-memory conversation history keyed by session_id
 conversation_history: dict[str, list[dict]] = {}
+# Act filter last used per session. Only a follow-up that names sections but
+# no Act ("use sections 25(2) and 27") inherits it; see _act_in_play().
+session_acts: dict[str, str] = {}
 
 # Attachment constants
 ALLOWED_CONTENT_TYPES = {
@@ -498,7 +507,8 @@ def search_similar(query: str, top_k: int = TOP_K, act_filter: str = None) -> Li
     for i, meta in enumerate(metadata):
         raw_score = similarities[i]
 
-        if key_sections and raw_score >= PINNED_MIN_SIMILARITY and is_pinned_section(meta, key_sections):
+        if (key_sections and is_pinned_section(meta, key_sections)
+                and (raw_score >= PINNED_MIN_SIMILARITY or pin_ignores_floor(meta))):
             pin_key = (meta.get("act_title", ""), meta.get("section_number", "").strip())
             if pin_key not in pin_rows or raw_score > raw_scores[pin_rows[pin_key]]:
                 pin_rows[pin_key] = i
@@ -585,6 +595,16 @@ def search_similar(query: str, top_k: int = TOP_K, act_filter: str = None) -> Li
 
     pinned = _apply_pins(top_indices, pin_rows, raw_scores, similarities, top_k)
 
+    # Sections named by number are looked up only inside an Act in play; with
+    # no Act there is no telling whose "section 25" is meant.
+    if act_filter:
+        explicit = _explicit_section_rows(query, act_filter, raw_scores, similarities, top_k)
+        if explicit:
+            taken = {_row_key(i) for i in explicit}
+            rest = [i for i in top_indices if _row_key(i) not in taken]
+            top_indices = explicit + rest[:max(0, top_k - len(explicit))]
+            pinned |= set(explicit)
+
     results = []
     for idx in top_indices:
         meta = metadata[idx]
@@ -634,6 +654,88 @@ def _apply_pins(top_indices: list, pin_rows: dict, raw_scores, similarities, top
 
     top_indices.sort(key=lambda i: similarities[i], reverse=True)
     return protected
+
+
+# A section reference needs its prefix ("section", "sections", "sec", "s",
+# "ss"), so "90 day notice" and bare years are never read as sections. The
+# lookbehind keeps "it's 25" and "pages 2" out; at most three digits (the
+# corpus tops out at s 726) keeps "s 2020" out, and ordinals ("25th") are not
+# letter suffixes. "(2)" subsections are dropped.
+_SECTION_NUM = r"(\d{1,3}(?!(?:st|nd|rd|th)\b)[a-z]{0,2})(?!\w)(?:\s*\([0-9a-z]{1,4}\))*"
+_SECTION_PREFIX = r"(?<![\w'’])(?:sections?|secs?\.?|ss\.?|s\.?)\s*"
+_SECTION_REF_RE = re.compile(
+    _SECTION_PREFIX + _SECTION_NUM
+    + r"(?:\s*(?:,|and|or|&|to|-|–|—)\s*(?:" + _SECTION_PREFIX + r")?" + _SECTION_NUM + r")*",
+    re.IGNORECASE,
+)
+_SECTION_NUM_RE = re.compile(_SECTION_NUM, re.IGNORECASE)
+_RANGE_SEP_RE = re.compile(r"^\s*(?:to|-|–|—)\s*$", re.IGNORECASE)
+
+
+def parse_section_refs(query: str) -> List[str]:
+    """Section numbers the question names, upper-cased, in order, without
+    subsections: "sections 25(2) and 27" -> ["25", "27"]. A small numeric range
+    ("ss 24 to 26") is expanded; at most MAX_EXPLICIT_SECTIONS are returned."""
+    refs: List[str] = []
+
+    def add(sec: str):
+        if sec not in refs:
+            refs.append(sec)
+
+    for match in _SECTION_REF_RE.finditer(query or ""):
+        span = match.group(0)
+        nums = list(_SECTION_NUM_RE.finditer(span))
+        for k, m in enumerate(nums):
+            sec = m.group(1).upper()
+            prev = nums[k - 1] if k else None
+            if (prev and sec.isdigit() and prev.group(1).isdigit()
+                    and _RANGE_SEP_RE.match(span[prev.end():m.start()])):
+                lo, hi = int(prev.group(1)), int(sec)
+                if 0 < hi - lo <= MAX_SECTION_RANGE:
+                    for n in range(lo + 1, hi):
+                        add(str(n))
+            add(sec)
+    return refs[:MAX_EXPLICIT_SECTIONS]
+
+
+def _row_key(i: int) -> tuple:
+    meta = metadata[i]
+    return (meta.get("act_title", ""), meta.get("section_number", ""), meta.get("text", ""))
+
+
+def _explicit_section_rows(query: str, act_filter: str, raw_scores, similarities, top_k: int) -> list:
+    """Row indices for the sections the question names, inside the act filter
+    (rows it excluded score -1). Each section keeps its MAX_CHUNKS_PER_SECTION
+    chunks most similar to the question; every named section's best chunk
+    comes before any second chunk, so a cap at top_k drops second chunks first.
+
+    The act filter is a substring match ("Crimes" also admits the International
+    Crimes and International Criminal Court Act); ranking sorts that out, but a
+    lookup by number would return that Act's s 48 too. So when the filter is a
+    registry base name, only the Acts with exactly that name are looked up."""
+    refs = parse_section_refs(query)
+    if not refs:
+        return []
+    wanted = set(refs)
+    exact_titles = set(titles_for_base_name(act_filter))
+    by_section: dict = {}
+    for i, meta in enumerate(metadata):
+        sec = meta.get("section_number", "").strip().upper()
+        if (sec in wanted and similarities[i] > -1
+                and (not exact_titles or meta.get("act_title", "") in exact_titles)):
+            by_section.setdefault(sec, []).append(i)
+
+    chunks = []
+    for sec in refs:
+        rows, seen = [], set()
+        for i in sorted(by_section.get(sec, []), key=lambda i: raw_scores[i], reverse=True):
+            if _row_key(i) not in seen:
+                seen.add(_row_key(i))
+                rows.append(i)
+        chunks.append(rows[:MAX_CHUNKS_PER_SECTION])
+
+    ordered = [rows[n] for n in range(MAX_CHUNKS_PER_SECTION) for rows in chunks if n < len(rows)]
+    return ordered[:top_k]
 
 
 NO_EXCERPTS_CONTEXT = (
@@ -1419,6 +1521,9 @@ _LEGAL_SIGNALS = re.compile(
     r'\bsue\b)'
 )
 
+_WHY_CAN_YOU = re.compile(r"(?i)^\s*why\s+can\s+you\b")
+_CAN_YOU = re.compile(r"(?i)\bcan\s+you\b")
+
 
 def _is_legal_query(query: str, detected_act: str | None, session_id: str = "") -> bool:
     """Lightweight check: should we search the legislation database?
@@ -1463,8 +1568,12 @@ def _is_legal_query(query: str, detected_act: str | None, session_id: str = "") 
         if has_recent_legal and is_followup_shaped:
             return True
 
-    # If any legal signal word/pattern is present, search
-    if _LEGAL_SIGNALS.search(query):
+    # If any legal signal word/pattern is present, search. In "Why can you not
+    # retrieve them?" (12 Nov ticket, turn 4) "can you" asks about Bowen, not
+    # the law, and the search returned four unrelated Acts; "Why can't you
+    # find it?" never matched, so this treats the two alike.
+    signal_text = _CAN_YOU.sub(" ", query) if _WHY_CAN_YOU.match(query) else query
+    if _LEGAL_SIGNALS.search(signal_text):
         return True
 
     # Short casual messages (greetings, dev notes) — skip
@@ -1474,6 +1583,24 @@ def _is_legal_query(query: str, detected_act: str | None, session_id: str = "") 
 
     # Default: search (err on side of inclusion)
     return True
+
+
+def _act_in_play(query: str, session_id: str) -> Optional[str]:
+    """The Act filter for this message, shared by /chat and /chat/stream.
+
+    An Act the message names wins and is remembered for the session. A
+    follow-up that names sections but no Act ("use sections 25(2) and 27")
+    uses the Act remembered from an earlier turn; anything else gets none, as
+    before, so a carried filter cannot narrow an unrelated question.
+    """
+    detected = detect_act_from_query(query)
+    if detected:
+        if session_id:
+            session_acts[session_id] = detected
+        return detected
+    if session_id and parse_section_refs(query):
+        return session_acts.get(session_id)
+    return None
 
 
 def _retrieve_for_query(query: str, detected_act: str | None, session_id: str):
@@ -1520,8 +1647,8 @@ async def chat(request: ChatRequest, req: Request):
     # Get or generate session ID
     session_id = request.session_id or str(uuid.uuid4())
 
-    # Detect if asking about specific Act
-    detected_act = detect_act_from_query(query)
+    # Detect if asking about specific Act (or carry it into a section follow-up)
+    detected_act = _act_in_play(query, session_id)
 
     # Log incoming request
     logger.log_chat_request(session_id, len(query), detected_act)
@@ -1615,7 +1742,7 @@ async def chat_stream(request: ChatRequest, req: Request):
         raise_anthropic_unavailable()
 
     session_id = request.session_id or str(uuid.uuid4())
-    detected_act = detect_act_from_query(query)
+    detected_act = _act_in_play(query, session_id)
     logger.log_chat_request(session_id, len(query), detected_act)
 
     is_legal_query, results, context, reference_context = _retrieve_for_query(
@@ -1693,6 +1820,7 @@ async def chat_stream(request: ChatRequest, req: Request):
 async def clear_session(session_id: str):
     """Clear conversation history for a session."""
     conversation_history.pop(session_id, None)
+    session_acts.pop(session_id, None)
     return {"status": "cleared"}
 
 

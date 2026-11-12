@@ -172,8 +172,10 @@ def client(app_module):
 def clean_history(app_module):
     """Conversation history is process-global; keep tests independent."""
     app_module.conversation_history.clear()
+    app_module.session_acts.clear()
     yield
     app_module.conversation_history.clear()
+    app_module.session_acts.clear()
 
 
 @pytest.fixture(scope="session")

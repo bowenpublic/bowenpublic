@@ -450,7 +450,9 @@ def test_not_held_path_forbids_general_terms_summaries(app_module):
         assert "no other phone number or organisation" in text
 
 
-def test_flatmate_singular_topic():
+def test_flatmate_names_no_sections():
+    """The flatmate topic named RTA ss 10A-10B, which do not exist; it was
+    removed in the key-sections audit (2026-11-12)."""
     from backend.app.key_sections import get_key_sections_for_query
-    assert ("rta", ["10A", "10B"]) in get_key_sections_for_query("my flatmate moved out")
+    assert get_key_sections_for_query("my flatmate moved out") == []
 
