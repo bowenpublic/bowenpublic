@@ -10,6 +10,7 @@ Run from magna root:
     uvicorn backend.app.main:app --reload --port 8000
 """
 
+import asyncio
 import sys
 import os
 import re
@@ -89,6 +90,51 @@ THINKING_TOKEN_HEADROOM = 8000
 # recommended fallback model. A model without fallbacks just runs alone.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 CLAUDE_FALLBACKS = "default"
+
+# fetch_section: on a legal question Claude may read a held section it was not
+# shown (an excerpt depends on it, or the person named it) before answering.
+MAX_TOOL_ROUNDS = 3          # rounds of fetching; the next request must answer
+MAX_FETCHED_SECTIONS = 6     # fetch calls per answer, whatever they return
+MAX_FETCH_CHARS = 16000      # text returned per section (LCA s 6 is ~23,500)
+# In a round where Claude may still fetch, its text is held back until this
+# many characters have arrived, so a sentence written before a fetch is never
+# shown. Past it the round streams live and a later fetch is declined.
+FETCH_COMMIT_CHARS = 300
+FETCH_TOOL_NAME = "fetch_section"
+FETCH_SECTION_TOOL = {
+    "name": FETCH_TOOL_NAME,
+    "description": (
+        "Returns the text of one section of an Act Bowen holds, from the same database as "
+        "the excerpts. Use it when an excerpt your answer relies on depends on a section you "
+        "were not shown (it cites it, or uses a term defined there), or when the person asked "
+        "about a section by number that is not in the excerpts. The text returned counts as "
+        "an excerpt. If the Act is not held or has no such section, the result says so; then "
+        "describe nothing about that section."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "act": {
+                "type": "string",
+                "description": "Full title of the Act, as in the excerpt headings or the list of "
+                               "Acts you hold, e.g. \"Lawyers and Conveyancers Act 2006\".",
+            },
+            "section": {
+                "type": "string",
+                "description": "The section number only, without subsections, e.g. \"6\", "
+                               "\"42B\", \"Schedule 1 cl 11\".",
+            },
+            "find": {
+                "type": "string",
+                "description": "Optional. The term or phrase you need, e.g. \"reserved areas of "
+                               "work\". Used when the section is too long to return whole, such "
+                               "as an interpretation section.",
+            },
+        },
+        "required": ["act", "section"],
+        "additionalProperties": False,
+    },
+}
 
 # Shown, with no sources, when every model in the chain declines to answer.
 # Draft for the founder to approve.
@@ -215,12 +261,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
-def _stub_message(model: str, text: str, stop_reason: str = "end_turn", stop_details=None):
-    """A BetaMessage shaped like Opus 5.5's: an empty thinking block, then text."""
+def _stub_message(model: str, text: str, stop_reason: str = "end_turn", stop_details=None,
+                  tool_calls=(), extra_blocks=()):
+    """A BetaMessage shaped like Opus 5.5's: an empty thinking block, then text,
+    then a tool_use block per (name, input) in tool_calls (stop_reason becomes
+    "tool_use" when there are any). extra_blocks go first, e.g. a fallback block."""
     from anthropic.types.beta import BetaMessage
-    content = [{"type": "thinking", "thinking": "", "signature": "stub"}]
+    content = list(extra_blocks) + [{"type": "thinking", "thinking": "", "signature": "stub"}]
     if text:
         content.append({"type": "text", "text": text})
+    for n, (name, tool_input) in enumerate(tool_calls):
+        content.append({"type": "tool_use", "id": f"toolu_stub_{n}", "name": name, "input": tool_input})
+    if tool_calls and stop_reason == "end_turn":
+        stop_reason = "tool_use"
     return BetaMessage.model_validate({
         "id": "msg_stub", "type": "message", "role": "assistant", "model": model,
         "content": content, "stop_reason": stop_reason, "stop_sequence": None,
@@ -250,27 +303,49 @@ class _StubStream:
 
 
 class _StubMessages:
-    """beta.messages for the stub client. Answers every request with
-    STUB_RESPONSE (read at call time, so tests can swap it) and keeps the last
-    request's arguments in .last_request."""
+    """beta.messages for the stub client. Answers each request with the next
+    entry of .script (a BetaMessage, or a callable taking the request kwargs
+    and returning one), and with STUB_RESPONSE (read at call time, so tests can
+    swap it) once the script is empty. Keeps the last request's arguments in
+    .last_request and a snapshot of every request in .requests, so a test can
+    script a fetch_section round and inspect each round's request."""
     def __init__(self):
         self.last_request = None
+        self.requests: list[dict] = []
+        self.script: list = []
 
-    def create(self, **kwargs):
-        self.last_request = kwargs
+    def _answer(self, kwargs):
+        # The tool loop appends to the same messages list between rounds, so
+        # each request is recorded with its own copy of the list.
+        snapshot = dict(kwargs)
+        if "messages" in snapshot:
+            snapshot["messages"] = list(snapshot["messages"])
+        self.last_request = snapshot
+        self.requests.append(snapshot)
+        if self.script:
+            nxt = self.script.pop(0)
+            return nxt(kwargs) if callable(nxt) else nxt
         return _stub_message(kwargs["model"], STUB_RESPONSE)
 
+    def reset(self):
+        self.last_request = None
+        self.requests.clear()
+        self.script.clear()
+
+    def create(self, **kwargs):
+        return self._answer(kwargs)
+
     def stream(self, **kwargs):
-        self.last_request = kwargs
-        return _StubStream(_stub_message(kwargs["model"], STUB_RESPONSE))
+        return _StubStream(self._answer(kwargs))
 
 
 class _StubAnthropicClient:
     """Stand-in for the Anthropic client when BOWEN_STUB_LLM is set.
 
     It never opens a connection: client.beta.messages.create/stream answer
-    locally with STUB_RESPONSE in the real response shape. Nothing else is
-    defined, so any other API use raises AttributeError.
+    locally, in the real response shape, with the next scripted message or
+    STUB_RESPONSE (see _StubMessages). Nothing else is defined, so any other
+    API use raises AttributeError.
     """
     def __init__(self):
         self.beta = type("StubBeta", (), {})()
@@ -298,6 +373,29 @@ from .acts_registry import (
 )
 print(f"[BOOT] Acts registry OK ({len(ACTS_REGISTRY)} acts)", flush=True)
 
+# The search planner (Claude Haiku), the second opinion (OpenAI) and the web
+# context (OpenAI or Perplexity web search). Each never raises and returns None
+# when off or failing.
+from . import planner
+from . import second_opinion
+from . import web_context
+
+
+def _vendor_configs():
+    """(second_opinion.Config, web_context.Config) from the environment. Under
+    BOWEN_STUB_LLM both are off whatever keys the environment holds, so an
+    offline run calls no vendor; tests that need them on set the globals."""
+    so_cfg, web_cfg = second_opinion.load_config(), web_context.load_config()
+    if STUB_LLM:
+        import dataclasses
+        so_cfg = dataclasses.replace(so_cfg, mode="off")
+        web_cfg = dataclasses.replace(web_cfg, mode="off")
+    return so_cfg, web_cfg
+
+
+# Loaded once here and again in startup(); requests read these globals.
+SECOND_OPINION_CONFIG, WEB_CONTEXT_CONFIG = _vendor_configs()
+
 # Every in-force title, as /acts lists them, for the AVAILABLE ACTS section: the
 # model guessed "not held" for held Acts when it only knew the count.
 HELD_ACT_TITLES = sorted({a["title"] for a in get_all_acts()})
@@ -316,16 +414,21 @@ You ARE Bowen. Always refer to yourself in the first person — "I", "me", "my".
 
 Bowen has his own personality: passion and humour, with precision about the legal text he holds. He provides information, never advice. He believes that information transmission is one of the essences of the universe, and that law is perhaps like a semantic engine that constantly translates between levels of abstraction, from broad principles to specific rules to particular applications.
 
+Who runs you, as your About page (bowenpublic.com/about) states it: Bowen Public is operated by the Bowen Public Charitable Trust, a charitable trust board incorporated under the Charitable Trusts Act 1957; the service is free to use; registration with Charities Services is in progress. You may say this when asked, since it is about you, not a statement of law. For anything else about the Trust, point to that page. Whether this changes how any law applies is a legal question, answered under the rules below.
+
 ## WHERE YOUR ANSWERS COME FROM
-Each user message arrives with a block headed "LEGISLATION EXCERPTS FROM DATABASE". Those excerpts are your only source of law. You do not answer legal questions from your own memory of NZ law, even when you are confident: memory can be out of date, can get section numbers wrong, and can describe law that has been repealed.
+Each user message arrives with a block headed "LEGISLATION EXCERPTS FROM DATABASE". Those excerpts are your only source of law. You do not answer legal questions from your own memory of NZ law, even when you are confident: memory can be out of date, can get section numbers wrong, and can describe law that has been repealed. A section you fetch with the fetch_section tool, when it is offered, counts as an excerpt for this answer.
+
+## FETCHING A SECTION
+When the fetch_section tool is offered, use it to read a section of a held Act that you need but were not shown, in two cases: an excerpt your answer relies on depends on another section (it cites the section, or uses a term defined elsewhere in the Act, such as in its interpretation section), or the person asked about a section by number and it is not in the excerpts. Fetch before you write any of the answer, then write the whole answer once. You may use what you know of an Act's layout to choose which section to fetch; what you rely on is the text that comes back, and if it is not the section you needed, say so and do not describe what you expected. For a long section, give the term you need as "find". Fetch only what the answer needs. If a fetch says the section is not held or does not exist, say that, and describe nothing about it. A section you have neither been shown nor fetched is unseen under rule 2.
 
 ## RULES
 1. You provide information, not legal advice.
 2. Answer only from the LEGISLATION EXCERPTS FROM DATABASE. Every rule, section number, time limit, amount, rate, entitlement, duty or offence you state must come from an excerpt you have been shown. If it is not in an excerpt, do not state it.
-   This covers what a section, Part, Schedule or clause says. Unless its own text is in this turn's excerpts, do not say, suggest or guess what a numbered provision contains, deals with or "likely" covers, not even with "may", "probably" or a disclaimer, and not in a partial answer under rule 4. You may say that you did not retrieve it. A provision that an excerpt mentions by number (for example a heading "Exceptions to sections 21, 22, 24, and 26") may be named as it is mentioned there, but described no further than that excerpt describes it. Your earlier answers in this conversation are not excerpts: a section you described in an earlier turn must be in this turn's excerpts before you describe it again.
-3. If no excerpt governs the question, do not answer the legal question. Name the Act that probably governs it if you know it; if that Act is on the list in AVAILABLE ACTS, say that you hold it but did not retrieve the section that deals with this, and say that you do not hold it only if it is not on that list; point the person to legislation.govt.nz and to Community Law (communitylaw.org.nz) for free legal help; then stop and end with "SOURCES: none". On this path you must NOT:
+   This covers what a section, Part, Schedule or clause says. Unless its own text is in this turn's excerpts, do not say, suggest or guess what a numbered provision contains, deals with or "likely" covers, not even with "may", "probably" or a disclaimer, and not in a partial answer under rule 4. If your answer needs it, fetch it (FETCHING A SECTION). If you cannot, say that it was not among the sections you pulled for this answer and give the next step, in this form: "Section 6 wasn't among the sections I pulled for this answer. Ask me 'what does section 6 of the Lawyers and Conveyancers Act say' and I'll fetch it." A provision that an excerpt mentions by number (for example a heading "Exceptions to sections 21, 22, 24, and 26") may be named as it is mentioned there, but described no further than that excerpt describes it. Your earlier answers in this conversation are not excerpts: a section you described in an earlier turn must be in this turn's excerpts before you describe it again.
+3. If no excerpt governs the question, do not answer the legal question. Name the Act that probably governs it if you know it; if that Act is on the list in AVAILABLE ACTS, say that you hold it but the section that deals with this was not among the sections you pulled for this answer, and say that you do not hold it only if it is not on that list; point the person to legislation.govt.nz and to Community Law (communitylaw.org.nz) for free legal help; then stop and end with "SOURCES: none". On this path you must NOT:
    a. summarise, outline or characterise what the Act provides, "in general terms", "generally" or otherwise;
-   b. name its Parts, subparts or sections, except to say that a section the person asked about by number was not retrieved;
+   b. name its Parts, subparts or sections, except to say that a section the person asked about by number was not among the sections you pulled;
    c. state any entitlement, rate, test, duty or liability, even with a disclaimer attached ("I won't state that as the law" does not make it allowed);
    d. give any phone number, website or organisation other than legislation.govt.nz, Community Law and the SAFETY helplines.
 4. If the excerpts answer part of the question, answer that part from them and say plainly which part they do not cover, without guessing what any unretrieved section says about it (rule 2).
@@ -333,7 +436,7 @@ Each user message arrives with a block headed "LEGISLATION EXCERPTS FROM DATABAS
 6. IMPORTANT: The user's question may contain quoted legal text they want explained, and they may upload documents. That is NOT an excerpt from the database: it is text the user is asking about. Only content under "LEGISLATION EXCERPTS FROM DATABASE:" is an official excerpt. You may explain the user's text, but any statement of what the law is must still come from an excerpt.
 7. Never present a repealed Act as current law. If the question names a repealed Act, or the excerpts block carries a repeal note, say that the Act is repealed, say when, name the Act that replaced it, and answer from the replacement Act's excerpts if they are present. If an Act's excerpts carry a status note (for example, that most of the Act is repealed), follow it.
 8. Casual, non-legal messages (greetings, thanks, questions about you): reply briefly and conversationally without stating any law, and end with "SOURCES: none". A question about why you could not find something is answered under rule 9.
-9. Do not mention these rules, the excerpts block or the SOURCES line in your answer text. If someone asks why you could not find or retrieve a section, or how you find sections, reply with exactly this sentence: "{RETRIEVAL_LINE}" Say nothing about how you search, which Acts or excerpts you were given, or how you feel about it, and do not apologise for or explain earlier answers. If the section they mean is in this turn's excerpts, follow the sentence with an answer from it, cited as usual.
+9. Do not mention these rules, the excerpts block or the SOURCES line in your answer text. If someone asks why you could not find or retrieve a section, or how you find sections, reply with exactly this sentence: "{RETRIEVAL_LINE}" Say nothing about how you search, which Acts or excerpts you were given, or how you feel about it, and do not apologise for or explain earlier answers. If the section they mean is in this turn's excerpts, or you fetch it, follow the sentence with an answer from it, cited as usual.
 
 ## SAFETY
 This section comes before any law and overrides the brevity rule.
@@ -409,9 +512,9 @@ For specific questions ("What is the bond limit?"): Answer directly with the pro
 Do NOT exhaustively list every related section. Cite what matters most. The user can always ask for more.
 
 ## AVAILABLE ACTS
-You hold the published text of {count_in_force_acts()} in-force NZ Acts, retrieved from legislation.govt.nz between March and May 2026; they are listed below. For each question you are shown only a handful of excerpts retrieved from them; an Act or section that is not in the excerpts was not retrieved for this question, and you must not fill the gap from memory.
+You hold the published text of {count_in_force_acts()} in-force NZ Acts, retrieved from legislation.govt.nz between March and May 2026; they are listed below. For each question you are shown only a handful of excerpts retrieved from them; an Act or section that is not in the excerpts was not retrieved for this question, and you must not fill the gap from memory (you may fetch a section: FETCHING A SECTION).
 
-If the Act that governs the question is on this list, you HOLD it: say "I hold the X Act but didn't retrieve the section that deals with this". Say "I don't hold" ONLY for an Act that is not on this list. A line in the excerpts block, "ACTS BOWEN HOLDS THAT MATCH THIS QUESTION", names the listed Acts that match each question.
+If the Act that governs the question is on this list, you HOLD it: say "I hold the X Act, but the section that deals with this wasn't among the sections I pulled for this answer", and if the person can name the section, invite them to ask for it by number. Say "I don't hold" ONLY for an Act that is not on this list. A line in the excerpts block, "ACTS BOWEN HOLDS THAT MATCH THIS QUESTION", names the listed Acts that match each question.
 
 You hold Acts only, no regulations or orders. Some things people often ask about are not held, for example the Holidays Act 2003, the Minimum Wage Act 1983, the Sale and Supply of Alcohol Act 2012, the Charities Act 2005, the End of Life Choice Act 2019 and the Residential Tenancies (Healthy Homes Standards) Regulations 2019. When users ask what you have access to, describe it accurately, without overstating or understating it.
 
@@ -554,6 +657,20 @@ async def startup():
             print(f"✗ Could not initialize Anthropic: {e}", flush=True)
     else:
         print("✗ ANTHROPIC_API_KEY not set in .env", flush=True)
+
+    # The planner's held-Act index, built after the repealed rows are dropped.
+    if metadata is not None:
+        n_acts = len(_sections_by_act())
+        print(f"✓ Search planner: {'on' if planner.planner_enabled() else 'off'} "
+              f"(model {planner.planner_model()}, {n_acts} Acts indexed)", flush=True)
+
+    # Second opinion and web context: one config each, read here, one log line each.
+    global SECOND_OPINION_CONFIG, WEB_CONTEXT_CONFIG
+    SECOND_OPINION_CONFIG, WEB_CONTEXT_CONFIG = _vendor_configs()
+    second_opinion.log_startup(SECOND_OPINION_CONFIG)
+    web_context.log_startup(WEB_CONTEXT_CONFIG)
+    print(f"✓ Second opinion: {SECOND_OPINION_CONFIG.mode if SECOND_OPINION_CONFIG.enabled else 'off'}; "
+          f"web context: {WEB_CONTEXT_CONFIG.mode if WEB_CONTEXT_CONFIG.enabled else 'off'}", flush=True)
 
     # Initialize logs directory
     LOGS_DIR.mkdir(exist_ok=True)
@@ -806,6 +923,19 @@ def _row_key(i: int) -> tuple:
     return (meta.get("act_title", ""), meta.get("section_number", ""), meta.get("text", ""))
 
 
+def _section_rows(wanted: set, keep) -> dict:
+    """{SECTION: [row indices in corpus order]} for every row whose section
+    number, stripped and upper-cased, is in wanted and for which keep(i, meta)
+    is true. The (act, section) lookup shared by _explicit_section_rows and
+    fetch_section_text."""
+    by_section: dict = {}
+    for i, meta in enumerate(metadata):
+        sec = meta.get("section_number", "").strip().upper()
+        if sec in wanted and keep(i, meta):
+            by_section.setdefault(sec, []).append(i)
+    return by_section
+
+
 def _explicit_section_rows(query: str, act_filter: str, raw_scores, similarities, top_k: int) -> list:
     """Row indices for the sections the question names, inside the act filter
     (rows it excluded score -1). Each section keeps its MAX_CHUNKS_PER_SECTION
@@ -819,36 +949,410 @@ def _explicit_section_rows(query: str, act_filter: str, raw_scores, similarities
     refs = parse_section_refs(query)
     if not refs:
         return []
-    wanted = set(refs)
     exact_titles = set(titles_for_base_name(act_filter))
-    by_section: dict = {}
-    for i, meta in enumerate(metadata):
-        sec = meta.get("section_number", "").strip().upper()
-        if (sec in wanted and similarities[i] > -1
-                and (not exact_titles or meta.get("act_title", "") in exact_titles)):
-            by_section.setdefault(sec, []).append(i)
+    return _named_section_rows(
+        refs,
+        lambda i, meta: similarities[i] > -1
+        and (not exact_titles or meta.get("act_title", "") in exact_titles),
+        lambda i: raw_scores[i], MAX_CHUNKS_PER_SECTION, top_k)
 
+
+def _named_section_rows(sections: list, keep, score, per_section: int, limit: int) -> list:
+    """Row indices for sections looked up by number: the exact-row lookup
+    shared by sections the user names and sections the search planner names.
+    Each section keeps its per_section distinct chunks with the highest
+    score(i); every section's best chunk comes before any second chunk, so a
+    cap at limit drops second chunks first."""
+    by_section = _section_rows({s.strip().upper() for s in sections}, keep)
     chunks = []
-    for sec in refs:
+    for sec in sections:
         rows, seen = [], set()
-        for i in sorted(by_section.get(sec, []), key=lambda i: raw_scores[i], reverse=True):
+        for i in sorted(by_section.get(sec.strip().upper(), []), key=score, reverse=True):
             if _row_key(i) not in seen:
                 seen.add(_row_key(i))
                 rows.append(i)
-        chunks.append(rows[:MAX_CHUNKS_PER_SECTION])
+        chunks.append(rows[:per_section])
 
-    ordered = [rows[n] for n in range(MAX_CHUNKS_PER_SECTION) for rows in chunks if n < len(rows)]
-    return ordered[:top_k]
+    ordered = [rows[n] for n in range(per_section) for rows in chunks if n < len(rows)]
+    return ordered[:limit]
+
+
+# =============================================================================
+# The search planner's plan, merged into the six excerpts
+# =============================================================================
+
+_sections_by_act_cache: dict = {"key": None, "index": {}}
+# The best rows of the user's own search that a plan can never push out. The
+# rewrite's rows can outscore every one of them (measured: "can my boss read my
+# emails" lost all six to a plan for the wrong Act), so these are kept first.
+PLAN_KEEPS_OWN_ROWS = 2
+
+
+def _sections_by_act() -> dict:
+    """planner.build_section_index of the loaded index (after the repealed rows
+    are dropped), built once per index; startup() builds it eagerly."""
+    key = (id(metadata), len(metadata or []))
+    if _sections_by_act_cache["key"] != key:
+        _sections_by_act_cache.update(key=key, index=planner.build_section_index(metadata or []))
+    return _sections_by_act_cache["index"]
+
+
+def _result_from_row(idx: int, score: float, pinned: bool) -> dict:
+    """One index row in the dict shape search_similar returns."""
+    meta = metadata[idx]
+    return {
+        "text": meta.get("text", ""),
+        "act_title": meta.get("act_title", ""),
+        "act_short_name": meta.get("act_short_name", ""),
+        "section_number": meta.get("section_number", ""),
+        "section_heading": meta.get("section_heading", ""),
+        "section_url": meta.get("section_url", ""),
+        "act_url": meta.get("act_url", ""),
+        "score": float(score),
+        "pinned": pinned,
+    }
+
+
+def _result_key(r: dict) -> tuple:
+    return (r["act_title"], r["section_number"], r["text"])
+
+
+def _section_of(r: dict) -> tuple:
+    return (r["act_title"], (r["section_number"] or "").strip())
+
+
+def merged_search(query: str, detected_act: Optional[str], merged=None, top_k: int = 6) -> List[dict]:
+    """The excerpts for a legal question: today's search_similar, plus what a
+    search plan adds (planner.merge_plan's MergedSearch). With no plan, or a
+    plan that adds nothing, this IS search_similar(query, top_k, detected_act),
+    the same list unchanged.
+
+    Order: 1. sections the user named by number (as search_similar placed
+    them); 2. at most planner.MAX_PLAN_SECTIONS plan sections, one chunk each
+    (the chunk closest to the user's words), by exact row in the plan's own
+    titles, pinned; 3. today's other pinned rows; 4. the PLAN_KEEPS_OWN_ROWS
+    best other rows of the user's own search; 5. the rest by score from the
+    user's own search and the rewrite's search together. Distinct rows
+    only, at most MAX_CHUNKS_PER_SECTION chunks of one section. The plan's Act
+    never filters the user's own words (merged.act_filter is today's filter).
+    """
+    act_filter = merged.act_filter if merged is not None else detected_act
+    base = search_similar(query, top_k=top_k, act_filter=act_filter)
+    if merged is None or not (merged.extra_sections or merged.extra_query):
+        return base
+
+    # 1. The user's named sections: search_similar pinned them ahead of the rest.
+    refs = set(parse_section_refs(query)) if act_filter else set()
+    exact = set(titles_for_base_name(act_filter)) if act_filter else set()
+    explicit = [r for r in base if r["pinned"] and r["section_number"].strip().upper() in refs
+                and (not exact or r["act_title"] in exact)]
+
+    out: list = []
+    seen: set = set()
+    per_section: dict = {}
+
+    def add(r: dict) -> bool:
+        k, s = _result_key(r), _section_of(r)
+        if len(out) >= top_k or k in seen or per_section.get(s, 0) >= MAX_CHUNKS_PER_SECTION:
+            return False
+        seen.add(k)
+        per_section[s] = per_section.get(s, 0) + 1
+        out.append(r)
+        return True
+
+    for r in explicit:
+        add(r)
+
+    # 2. Plan sections, one chunk each, into the slots that are left.
+    if merged.extra_sections and merged.section_act_titles and len(out) < top_k:
+        titles = set(merged.section_act_titles)
+        qv = embedding_model.encode(query, convert_to_numpy=True)
+        scores: dict = {}
+
+        def score(i):
+            if i not in scores:
+                scores[i] = float(np.dot(embeddings[i], qv))
+            return scores[i]
+
+        rows = _named_section_rows(merged.extra_sections,
+                                   lambda i, meta: meta.get("act_title", "") in titles,
+                                   score, 1, planner.MAX_PLAN_SECTIONS)
+        for i in rows:
+            add(_result_from_row(i, score(i), pinned=True))
+
+    # 3 and 4. Today's pinned rows, then everything else by score.
+    extra = (search_similar(merged.extra_query, top_k=top_k, act_filter=merged.extra_query_act_filter)
+             if merged.extra_query else [])
+    rest = [r for r in base if r not in explicit]
+    own = [r for r in rest if not r["pinned"]]
+    pool = ([r for r in rest if r["pinned"]] + own[:PLAN_KEEPS_OWN_ROWS]
+            + sorted(own[PLAN_KEEPS_OWN_ROWS:] + extra, key=lambda r: -r["score"]))
+    for r in pool:
+        add(r)
+    return out
+
+
+# =============================================================================
+# fetch_section: the one tool Claude is given, on legal questions only
+# =============================================================================
+
+_corpus_titles_cache: dict = {"key": None, "titles": [], "short": {}}
+_YEAR_SUFFIX_RE = re.compile(r"\s+\d{4}$")
+_FETCH_PREFIX_RE = re.compile(r"^(?:sections?|secs?\.?|ss?\.?)\s*(?=\d)", re.IGNORECASE)
+_SUBSECTION_RE = re.compile(r"(?<=[0-9a-z])(?:\s*\([0-9a-z]{1,4}\))+", re.IGNORECASE)
+
+
+def _corpus_titles():
+    """(sorted Act titles in the loaded index, {SHORT NAME: {titles}})."""
+    key = (id(metadata), len(metadata or []))
+    if _corpus_titles_cache["key"] != key:
+        titles, short = set(), {}
+        for meta in metadata or []:
+            title = meta.get("act_title", "")
+            if not title:
+                continue
+            titles.add(title)
+            sn = (meta.get("act_short_name") or "").strip().upper()
+            if sn:
+                short.setdefault(sn, set()).add(title)
+        _corpus_titles_cache.update(key=key, titles=sorted(titles), short=short)
+    return _corpus_titles_cache["titles"], _corpus_titles_cache["short"]
+
+
+def _resolve_held_act(act: str):
+    """(title, candidates). title is the held Act the name means, or None;
+    candidates are held titles when the name fits more than one."""
+    want = _norm_title(act)
+    if want.startswith("the "):
+        want = want[4:]
+    if not want:
+        return None, []
+    titles, short = _corpus_titles()
+    for t in titles:
+        if _norm_title(t) == want:
+            return t, []
+    bare = _YEAR_SUFFIX_RE.sub("", want)
+    same_name = [t for t in titles if _YEAR_SUFFIX_RE.sub("", _norm_title(t)) == bare]
+    if len(same_name) == 1:
+        return same_name[0], []
+    if same_name:
+        return None, same_name[:5]
+    by_short = short.get(act.strip().upper(), set())
+    if len(by_short) == 1:
+        return next(iter(by_short)), []
+    contained = [t for t in titles if _titles_match(want, t)]
+    if len(contained) == 1:
+        return contained[0], []
+    return None, contained[:5]
+
+
+def _fetch_section_key(section: str) -> str:
+    """"s 6(1)(a)" -> "6"; "Schedule 1 cl 11" -> "SCHEDULE 1 CL 11"."""
+    sec = " ".join((section or "").split())
+    sec = _FETCH_PREFIX_RE.sub("", sec)
+    sec = _SUBSECTION_RE.sub("", sec)
+    return sec.strip(" .,;").upper()
+
+
+def _norm_find(text: str) -> str:
+    return " ".join((text or "").lower().replace("’", "'").replace("“", '"')
+                    .replace("”", '"').split())
+
+
+def _fit_section_text(texts: list, find: Optional[str]) -> tuple[str, str]:
+    """(text, note) for a section's chunks, within MAX_FETCH_CHARS. A long
+    section keeps the chunks containing `find` and the chunk after each (a
+    definition can run across a chunk boundary), else its start."""
+    total = sum(len(t) for t in texts) + len(texts) - 1
+    if total <= MAX_FETCH_CHARS:
+        return " ".join(texts), ""
+    picked: list = []
+    if find and _norm_find(find):
+        needle = _norm_find(find)
+        for k, t in enumerate(texts):
+            if needle in _norm_find(t):
+                picked += [j for j in (k, k + 1) if j < len(texts) and j not in picked]
+    if picked:
+        note = (f'This section is {total:,} characters long, so only the parts containing '
+                f'"{find}" are shown, in order; "[...]" marks text left out.')
+    else:
+        picked = list(range(len(texts)))
+        note = ((f'"{find}" does not appear in this section. ' if find else "")
+                + f"This section is {total:,} characters long, so only its start is shown; "
+                  "to see another part, fetch it again with find set to the term you need.")
+    out, used, prev = [], 0, None
+    if min(picked) > 0:
+        out.append("[...]")
+    for j in sorted(picked):
+        if used + len(texts[j]) > MAX_FETCH_CHARS and out:
+            break
+        piece = texts[j][:MAX_FETCH_CHARS - used]
+        if prev is not None and j != prev + 1:
+            out.append("[...]")
+        out.append(piece)
+        used += len(piece)
+        prev = j
+    if prev is not None and prev < len(texts) - 1:
+        out.append("[...]")
+    return " ".join(out), note
+
+
+def fetch_section_text(act: str, section: str, find: Optional[str] = None):
+    """What fetch_section returns: (tool_result_text, result). result is the
+    section in the same dict shape search_similar returns, so the SOURCES line
+    can match it, or None when nothing was found. Nothing is listed that is not
+    in the index."""
+    title, candidates = _resolve_held_act(act)
+    if not title:
+        repealed = [t for t in REPEALED_TITLES if _titles_match(act, t)]
+        if repealed:
+            return f"NOT HELD: {repealed_note(repealed[0])}", None
+        if candidates:
+            return (f'NOT FOUND: "{act}" fits more than one Act Bowen holds: '
+                    f'{"; ".join(candidates)}. Fetch again with the full title.'), None
+        return (f'NOT HELD: Bowen does not hold an Act titled "{act}". Say so, and describe '
+                "nothing from it."), None
+
+    key = _fetch_section_key(section)
+    rows = _section_rows({key}, lambda i, meta: meta.get("act_title", "") == title).get(key, []) if key else []
+    if not rows:
+        return (f'NO SUCH SECTION: the {title} that Bowen holds has no section "{section}". '
+                "Say it was not found, and describe nothing about it."), None
+
+    texts, seen = [], set()
+    for i in sorted(rows):
+        text = metadata[i].get("text", "") or ""
+        if text and text not in seen:
+            seen.add(text)
+            texts.append(text)
+    body, note = _fit_section_text(texts, find)
+    first = metadata[rows[0]]
+    sec_number = (first.get("section_number") or "").strip()
+    heading = first.get("section_heading") or ""
+    result = {
+        "text": body,
+        "act_title": title,
+        "act_short_name": first.get("act_short_name", ""),
+        "section_number": sec_number,
+        "section_heading": heading,
+        "section_url": first.get("section_url", ""),
+        "act_url": first.get("act_url", ""),
+        "score": 1.0,  # an exact lookup, not a similarity
+        "pinned": True,
+        "fetched": True,
+    }
+    parts = [f'FETCHED FROM DATABASE. This counts as an excerpt; if you rely on it, list it on '
+             f'the SOURCES line as "{title} s {sec_number}".', f"## {title}"]
+    status_note = PARTIALLY_REPEALED_ACTS.get(title)
+    if status_note:
+        parts.append(f"STATUS NOTE: {status_note}")
+    parts.append(f"**Section {sec_number}" + (f" - {heading}" if heading else "") + f"**\n{body}")
+    if note:
+        parts.append(note)
+    return "\n\n".join(parts), result
+
+
+class _FetchState:
+    """One answer's fetches. results (the list the endpoint passed in) collects
+    each section found, once, for the SOURCES-line matching."""
+
+    def __init__(self, results: list):
+        self.results = results
+        self.calls = 0
+        self._seen: dict = {}
+        self.found: list = []   # sections found, in fetch order (for the status line)
+
+    @property
+    def full(self) -> bool:
+        return self.calls >= MAX_FETCHED_SECTIONS
+
+    def run(self, block) -> dict:
+        """The tool_result block for one tool_use block."""
+        args = block.input if isinstance(block.input, dict) else {}
+        act, section, find = args.get("act"), args.get("section"), args.get("find")
+        if (block.name != FETCH_TOOL_NAME or not isinstance(act, str) or not isinstance(section, str)
+                or not (find is None or isinstance(find, str))):
+            return _tool_result(block, f"Invalid call: {FETCH_TOOL_NAME} takes act and section "
+                                       "as text, and optionally find.", error=True)
+        key = (_norm_title(act), _fetch_section_key(section), _norm_find(find or ""))
+        if key in self._seen:
+            return _tool_result(block, "Already fetched for this answer; its text is above.")
+        if self.full:
+            return _tool_result(block, (
+                f"Not fetched: the limit of {MAX_FETCHED_SECTIONS} fetches for one answer is "
+                "reached. Answer now from what you have; for a section you could not fetch, "
+                "say it was not among the sections you pulled and how to ask for it."), error=True)
+        self.calls += 1
+        text, result = fetch_section_text(act, section, find)
+        self._seen[key] = True
+        logger.info(LogEvent.SEARCH, "fetch_section", act=act, section=section, find=find,
+                    found=bool(result))
+        if result:
+            self.found.append(result)
+        if result and not any(r["act_title"] == result["act_title"]
+                              and r["section_number"] == result["section_number"]
+                              for r in self.results):
+            self.results.append(result)
+        return _tool_result(block, text)
+
+
+class FetchStatus:
+    """Yielded by _answer_rounds after a fetch round, before Claude's next
+    request: /chat/stream sends .text as a "status" event so the reader sees
+    why the answer is taking longer. The text names only Acts and sections the
+    index resolved (fetch_section_text's result), never the model's input."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+    def __repr__(self):
+        return f"<FetchStatus {self.text!r}>"
+
+
+MAX_STATUS_SECTIONS = 3
+
+
+def fetch_status_text(found: List[dict]) -> str:
+    """"Reading section 6 of the Lawyers and Conveyancers Act 2006…" for the
+    sections found in one fetch round; "" when none was found."""
+    by_act: dict = {}
+    for r in found[:MAX_STATUS_SECTIONS]:
+        sec = (r.get("section_number") or "").strip()
+        title = r.get("act_title") or ""
+        if sec and title and sec not in by_act.setdefault(title, []):
+            by_act[title].append(sec)
+    parts = []
+    for title, secs in by_act.items():
+        numbered = [s for s in secs if s[:1].isdigit()]
+        other = [s for s in secs if not s[:1].isdigit()]   # "Schedule 1 cl 11"
+        names = []
+        if numbered:
+            word = "section" if len(numbered) == 1 else "sections"
+            names.append(f"{word} {' and '.join(numbered)}")
+        names += other
+        if names:
+            parts.append(f"{' and '.join(names)} of the {title}")
+    if not parts:
+        return ""
+    return f"Reading {' and '.join(parts)}…"
+
+
+def _tool_result(block, text: str, error: bool = False) -> dict:
+    out = {"type": "tool_result", "tool_use_id": block.id, "content": text}
+    if error:
+        out["is_error"] = True
+    return out
 
 
 NO_EXCERPTS_CONTEXT = (
     "No legislation excerpts were retrieved for this question. Do not answer it from memory: "
     "name the Act that probably governs it if you know it; if it is on the list of Acts you "
-    "hold, say that you hold it but did not retrieve the relevant section, and say that you do "
+    "hold, say that you hold it but the relevant section was not among the sections you pulled "
+    "for this answer, and say that you do "
     "not hold it only if it is not on that list; point to legislation.govt.nz and Community Law "
     "(communitylaw.org.nz), and stop. Do not summarise or characterise what the Act says "
     "\"in general terms\", do not name its Parts or sections (other than to say that a section "
-    "the person asked about was not retrieved), do not state any entitlement, "
+    "the person asked about was not among the sections you pulled), do not state any entitlement, "
     "rate, test or liability even with a disclaimer, and give no other phone number or "
     "organisation (except the safety helplines). End with \"SOURCES: none\"."
 )
@@ -909,7 +1413,7 @@ def held_acts_line(query: str, results: List[dict], detected_act: Optional[str] 
     if titles:
         line = (f"ACTS BOWEN HOLDS THAT MATCH THIS QUESTION: {'; '.join(titles)}. If the answer "
                 "lies in one of these and its section is not in the excerpts below, say you hold "
-                "the Act but did not retrieve the section; do not say you don't hold it.")
+                "the Act but its section was not among those you pulled; do not say you don't hold it.")
     else:
         line = ("ACTS BOWEN HOLDS THAT MATCH THIS QUESTION: none. No held Act matched this "
                 "question by name or keyword; the Act may or may not be held, check the list "
@@ -1038,7 +1542,7 @@ Answer the user's question using only:
 2. The curated scholarly references (if provided), for historical context and case law background only, never as a source of a section.
 3. The uploaded document text (if provided): analyse it against the excerpts. It is not itself an excerpt.
 
-If the excerpts do not govern the question, do not answer it from memory. Name the Act that probably governs it if you know it; if it is on the list of Acts you hold or in the ACTS BOWEN HOLDS line above, say that you hold it but did not retrieve the relevant section, and say that you do not hold it only if it is not on that list; point to legislation.govt.nz and Community Law (communitylaw.org.nz), and stop. Do not summarise or characterise what the Act says "in general terms", do not name its Parts or sections (other than to say that a section the person asked about was not retrieved), do not state any entitlement, rate, test or liability even with a disclaimer, and give no other phone number or organisation (except the safety helplines).
+If the excerpts do not govern the question, do not answer it from memory. Name the Act that probably governs it if you know it; if it is on the list of Acts you hold or in the ACTS BOWEN HOLDS line above, say that you hold it but the relevant section was not among the sections you pulled for this answer, and say that you do not hold it only if it is not on that list; point to legislation.govt.nz and Community Law (communitylaw.org.nz), and stop. Do not summarise or characterise what the Act says "in general terms", do not name its Parts or sections (other than to say that a section the person asked about was not among the sections you pulled), do not state any entitlement, rate, test or liability even with a disclaimer, and give no other phone number or organisation (except the safety helplines).
 
 Do not say or guess what any section, Part, Schedule or clause contains unless its own text is in the excerpts above; that holds in a partial answer too. Your earlier answers in this conversation are not excerpts.
 
@@ -1084,7 +1588,8 @@ Provide information, not legal advice. End with the SOURCES line: the excerpts y
 # The model ends every answer with one line:
 #     SOURCES: Residential Tenancies Act 1986 s 18; Residential Tenancies Act 1986 s 42B
 # or "SOURCES: none". finalise_answer() strips that line, keeps only the entries
-# that name a retrieved excerpt, and is the single post-processing step for both
+# that name a retrieved excerpt (searched, or fetched by Claude with
+# fetch_section; the endpoints pass both), and is the single post-processing step for both
 # /chat and /chat/stream. SourcesLineFilter keeps the line from ever reaching a
 # streaming client.
 
@@ -1092,9 +1597,9 @@ Provide information, not legal advice. End with the SOURCES line: the excerpts y
 # hold the Act" was being read at face value for Acts that are held (round 2,
 # item 2). Not held implies not retrieved, so this is true either way.
 NOT_HELD_FOOTER = (
-    "I haven't stated the rule here because I didn't retrieve the legislation text "
-    "that governs this question. You can read the current law at legislation.govt.nz, "
-    "and Community Law (communitylaw.org.nz) offers free legal help."
+    "I haven't stated the rule here because the legislation text that governs this "
+    "question wasn't among the sections I pulled for this answer. You can read the current "
+    "law at legislation.govt.nz, and Community Law (communitylaw.org.nz) offers free legal help."
 )
 
 _FOOTER_HELP = (
@@ -1117,8 +1622,10 @@ def not_held_footer(held_titles=()) -> str:
     if not held_titles:
         return NOT_HELD_FOOTER
     acts = " and the ".join(held_titles)
-    return (f"I hold the {acts}, but I didn't retrieve the section that deals with this "
-            f"question, so I haven't stated the rule here. {_FOOTER_HELP}")
+    # Same wording as the prompt's (AVAILABLE ACTS, rule 2), with its next step.
+    return (f"I hold the {acts}, but the section that deals with this question wasn't among "
+            f"the sections I pulled for this answer, so I haven't stated the rule here. If you "
+            f"know the section number, ask me about it by number and I'll fetch it. {_FOOTER_HELP}")
 
 # "SOURCES:" at the start of a line, optionally wrapped in markdown emphasis.
 _EMPHASIS = r"(?:\*\*|\*|__|_)?"
@@ -1336,8 +1843,11 @@ async def generate_response(
     session_id: str = "",
     attachment_context: str = "",
     image_blocks: list | None = None,
+    fetched: Optional[list] = None,
 ) -> str:
-    """Generate response using Claude (non-streaming)."""
+    """Generate response using Claude (non-streaming). When fetched is a list
+    (legal questions), Claude is offered fetch_section and each section it
+    fetches is appended to that list."""
     if not anthropic_client:
         raise_anthropic_unavailable()
 
@@ -1349,15 +1859,19 @@ async def generate_response(
     # History is stored by the endpoint, after finalise_answer, so that it holds
     # the clean text (no SOURCES line). Under BOWEN_STUB_LLM the client is the
     # offline stub, which answers with STUB_RESPONSE.
+    fetch = _FetchState(fetched) if fetched is not None else None
+    parts = []
     try:
-        message = anthropic_client.beta.messages.create(**_claude_request(messages, max_tokens))
+        for piece in _answer_rounds(messages, max_tokens, fetch, streaming=False):
+            if piece is REFUSED:
+                return REFUSED
+            if isinstance(piece, FetchStatus):
+                continue
+            parts.append(piece)
     except Exception as e:
         logger.error(LogEvent.CLAUDE_ERROR, f"Claude API error: {e}", error=e)
         raise_generation_failed(str(e))
-    if _check_stop(message):
-        return REFUSED
-    # A response can open with thinking blocks; the answer is the text blocks.
-    return "".join(b.text for b in message.content if b.type == "text")
+    return "".join(parts)
 
 
 async def generate_response_stream(
@@ -1367,8 +1881,11 @@ async def generate_response_stream(
     session_id: str = "",
     attachment_context: str = "",
     image_blocks: list | None = None,
+    fetched: Optional[list] = None,
 ):
-    """Streaming variant of generate_response. Yields text chunks as they arrive."""
+    """Streaming variant of generate_response. Yields text chunks as they
+    arrive, and a FetchStatus when a fetch runs (see _answer_rounds for what
+    is held back around a fetch)."""
     if not anthropic_client:
         raise_anthropic_unavailable()
 
@@ -1380,21 +1897,118 @@ async def generate_response_stream(
 
     # As in generate_response, the endpoint stores history after finalising.
     # text_stream carries text deltas only, so thinking never reaches the client.
+    fetch = _FetchState(fetched) if fetched is not None else None
     try:
-        with anthropic_client.beta.messages.stream(**_claude_request(messages, max_tokens)) as stream:
-            for text in stream.text_stream:
-                yield text
-            final = stream.get_final_message()
+        for piece in _answer_rounds(messages, max_tokens, fetch, streaming=True):
+            yield piece
     except Exception as e:
         logger.error(LogEvent.CLAUDE_ERROR, f"Claude API error: {e}", error=e)
         raise
-    if _check_stop(final):
-        yield REFUSED
 
 
-def _claude_request(messages: list, max_tokens: int) -> dict:
-    """Arguments for client.beta.messages.create/stream, the same for both paths."""
-    return {
+def _claude_round(request: dict, streaming: bool):
+    """One Claude call. Yields the text as it arrives and returns the final
+    message (read it with `message = yield from _claude_round(...)`)."""
+    if streaming:
+        with anthropic_client.beta.messages.stream(**request) as stream:
+            for text in stream.text_stream:
+                yield text
+            return stream.get_final_message()
+    message = anthropic_client.beta.messages.create(**request)
+    # A response can open with thinking blocks; the answer is the text blocks.
+    for block in message.content:
+        if block.type == "text":
+            yield block.text
+    return message
+
+
+def _last_fallback_index(content) -> int:
+    return max((i for i, b in enumerate(content) if b.type == "fallback"), default=-1)
+
+
+def _echo_content(content) -> list:
+    """The assistant turn as it is sent back for the next round: unchanged,
+    except that after a mid-output fallback the declined model's thinking and
+    tool_use blocks before the last fallback block are left out (its text and
+    the fallback block itself stay where they were)."""
+    last = _last_fallback_index(content)
+    return [b for i, b in enumerate(content) if i >= last or b.type in ("text", "fallback")]
+
+
+def _answer_rounds(messages: list, max_tokens: int, fetch: Optional[_FetchState], streaming: bool):
+    """The Claude call, with fetch_section rounds when `fetch` is given (legal
+    questions). Yields the text the user sees, a FetchStatus after each fetch
+    round that found a section, then REFUSED if the whole fallback chain
+    declined. Shared by /chat and /chat/stream so both give the
+    same answer.
+
+    While Claude may still fetch, a round's text is held back; if the round
+    ends in a fetch before FETCH_COMMIT_CHARS arrive, that text is dropped
+    (Claude was told to fetch before writing), so nothing shown is later
+    contradicted by a section it then read. Once text has been shown, any
+    further fetch is declined and the next request may not call the tool. The
+    same holds after MAX_TOOL_ROUNDS rounds or MAX_FETCHED_SECTIONS fetches:
+    the request is sent with tool_choice none, so Claude must answer.
+    `messages` is extended in place with each round's turns."""
+    rounds, shown = 0, False
+    while True:
+        may_fetch = (fetch is not None and rounds < MAX_TOOL_ROUNDS
+                     and not shown and not fetch.full)
+        request = _claude_request(messages, max_tokens, tools=fetch is not None,
+                                  allow_tool_calls=may_fetch)
+        held, released = [], False
+        gen = _claude_round(request, streaming)
+        while True:
+            try:
+                piece = next(gen)
+            except StopIteration as stop:
+                message = stop.value
+                break
+            if not piece:
+                continue
+            if may_fetch and not released:
+                held.append(piece)
+                if sum(len(p) for p in held) >= FETCH_COMMIT_CHARS:
+                    released = True
+                    yield "".join(held)
+                    held = []
+            else:
+                released = True
+                yield piece
+        if _check_stop(message):
+            yield REFUSED
+            return
+        last = _last_fallback_index(message.content)
+        calls = [b for b in message.content[last + 1:] if b.type == "tool_use"]
+        if not (may_fetch and message.stop_reason == "tool_use" and calls):
+            if held:
+                yield "".join(held)
+            return
+        if released:
+            shown = True
+            results = [_tool_result(b, "Not fetched: you had already begun the answer. Finish it "
+                                       "from the excerpts you have.", error=True) for b in calls]
+        else:
+            if held:
+                logger.info(LogEvent.SEARCH, "Text written before a fetch was not shown",
+                            chars=sum(len(p) for p in held))
+            before = len(fetch.found)
+            results = [fetch.run(b) for b in calls]
+            status = fetch_status_text(fetch.found[before:])
+            if status:
+                yield FetchStatus(status)
+        messages.append({"role": "assistant", "content": _echo_content(message.content)})
+        messages.append({"role": "user", "content": results})
+        rounds += 1
+
+
+def _claude_request(messages: list, max_tokens: int, tools: bool = False,
+                    allow_tool_calls: bool = True) -> dict:
+    """Arguments for client.beta.messages.create/stream, the same for both paths.
+    tools offers fetch_section; once the tool has been offered it stays in the
+    request (the history holds its calls), and allow_tool_calls=False sets
+    tool_choice none so that this request must answer."""
+    request = {
         "model": CLAUDE_MODEL,
         "max_tokens": max_tokens,
         "system": SYSTEM_PROMPT,
@@ -1403,6 +2017,11 @@ def _claude_request(messages: list, max_tokens: int) -> dict:
         "betas": [FALLBACK_BETA],
         "fallbacks": CLAUDE_FALLBACKS,
     }
+    if tools:
+        request["tools"] = [FETCH_SECTION_TOOL]
+        if not allow_tool_calls:
+            request["tool_choice"] = {"type": "none"}
+    return request
 
 
 def _check_stop(message) -> bool:
@@ -1438,9 +2057,16 @@ def log_query(
     response: str,
     detected_act: str,
     sources_count: int,
-    response_time_ms: int
+    response_time_ms: int,
+    extra: Optional[dict] = None,
 ):
-    """Log query to JSON file. No IP address or other network identifier is recorded."""
+    """Log query to JSON file. No IP address or other network identifier is recorded.
+
+    extra holds optional fields, present only when the step ran: "planner"
+    (planner.CallStats.as_log(), plus "plan" when it added to the search),
+    "fetched" ([{act, section}] Claude fetched), "second_opinion"
+    (second_opinion.verdict_log_fields) and "web_context" (web_context.log_fields).
+    None of them carries an API key. They never replace the fixed fields."""
     try:
         log_entry = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -1451,6 +2077,8 @@ def log_query(
             "sources_count": sources_count,
             "response_time_ms": response_time_ms
         }
+        for k, v in (extra or {}).items():
+            log_entry.setdefault(k, v)
 
         log_file = LOGS_DIR / "queries.jsonl"
         with open(log_file, "a") as f:
@@ -1730,18 +2358,21 @@ def _act_in_play(query: str, session_id: str) -> Optional[str]:
     return None
 
 
-def _retrieve_for_query(query: str, detected_act: str | None, session_id: str):
+def _retrieve_for_query(query: str, detected_act: str | None, session_id: str, merged=None):
     """Shared by /chat and /chat/stream.
 
     Returns (is_legal_query, results, context, reference_context). The context
     carries a repeal note for any wholly repealed Act the question names.
+    merged is the search plan's planner.MergedSearch, or None for today's search.
     """
     is_legal_query = bool(query) and _is_legal_query(query, detected_act, session_id)
     if not is_legal_query:
         return False, [], CASUAL_CONTEXT, ""
 
-    # Retrieve 6; the answer's SOURCES line decides which are shown.
-    results = search_similar(query, top_k=6, act_filter=detected_act)
+    # Retrieve 6; the answer's SOURCES line decides which are shown. The
+    # held-Acts line below stays true with plan rows in the results: it names
+    # only the keyword matches, and says every Act in the excerpts is held.
+    results = merged_search(query, detected_act, merged, top_k=6)
     context = f"{held_acts_line(query, results, detected_act)}\n\n{build_context(results)}"
     notes = build_repeal_notes(query)
     if notes:
@@ -1749,6 +2380,198 @@ def _retrieve_for_query(query: str, detected_act: str | None, session_id: str):
     matched_refs = find_matching_references(query)
     reference_context = build_reference_context(matched_refs)
     return True, results, context, reference_context
+
+
+async def _plan_for_query(query: str, detected_act: Optional[str], session_id: str):
+    """(merged, stats) for a legal question: one planner call, off the event
+    loop, merged with what the keyword detection decided. (None, stats) when
+    the planner is off, stubbed or fails; the search is then today's.
+
+    The plan's Act is NOT remembered in session_acts: a remembered Act becomes
+    the filter on a later section-number follow-up's own words, and the
+    planner sometimes picks a wrong Act. The planner reads the last turns
+    itself, so it carries the topic into a follow-up without that memory."""
+    calls: list = []
+    history = conversation_history.get(session_id, []) if session_id else []
+    plan = await asyncio.to_thread(
+        planner.plan_search, anthropic_client, query, history,
+        sections_by_act=_sections_by_act(), on_call=calls.append)
+    stats = calls[0] if calls else None
+    if plan is None:
+        return None, stats
+    # Sections the user named are looked up by number only inside a detected
+    # Act (search_similar); without one, the plan's own sections may cover them.
+    explicit = parse_section_refs(query) if detected_act else []
+    merged = planner.merge_plan(plan, detected_act, explicit)
+    return merged, stats
+
+
+async def _retrieve(query: str, detected_act: Optional[str], session_id: str):
+    """The planner (legal questions only) and the search, for both endpoints.
+    Returns (is_legal_query, results, context, reference_context, run)."""
+    run = _RunLog()
+    is_legal = bool(query) and _is_legal_query(query, detected_act, session_id)
+    merged = None
+    if is_legal:
+        merged, run.planner = await _plan_for_query(query, detected_act, session_id)
+        if merged is not None:
+            run.plan = planner_plan_fields(merged)
+    # Without a plan the call is exactly today's (tests spy on it with three arguments).
+    args = (query, detected_act, session_id) + ((merged,) if merged is not None else ())
+    is_legal_query, results, context, reference_context = _retrieve_for_query(*args)
+    return is_legal_query, results, context, reference_context, run
+
+
+def planner_plan_fields(merged) -> dict:
+    return {"sections": [f"{t} s {s}" for t in merged.section_act_titles for s in merged.extra_sections],
+            "search_text": merged.extra_query,
+            "extra_query_act_filter": merged.extra_query_act_filter}
+
+
+class _RunLog:
+    """What one question's optional steps did, for the query log."""
+
+    def __init__(self):
+        self.planner = None          # planner.CallStats, or None when not called
+        self.plan = None             # what the plan added to the search
+        self.verdict = None          # second_opinion.Verdict
+        self.web = None              # web_context.WebContext
+        self.shadow = None           # the shadow-mode check's asyncio.Task, if one runs
+
+    def fields(self, fetched: Optional[list]) -> dict:
+        out: dict = {}
+        if self.planner is not None and self.planner.outcome not in ("disabled", "stub"):
+            out["planner"] = dict(self.planner.as_log())
+            if self.plan:
+                out["planner"]["plan"] = self.plan
+        if fetched:
+            out["fetched"] = [{"act": r["act_title"], "section": r["section_number"]} for r in fetched]
+        if self.verdict is not None:
+            out["second_opinion"] = second_opinion.verdict_log_fields(self.verdict)
+        if self.web is not None:
+            out["web_context"] = web_context.log_fields(self.web)
+        return out
+
+
+async def _none():
+    return None
+
+
+def _checker_notes(query: str, reference_context: str, excerpts: List[dict]) -> str:
+    """Text other than the excerpts that Claude may rely on: repeal notes, the
+    status notes of partly repealed Acts in the excerpts, curated references."""
+    notes = [build_repeal_notes(query)]
+    for title in dict.fromkeys(r["act_title"] for r in excerpts):
+        if PARTIALLY_REPEALED_ACTS.get(title):
+            notes.append(f"STATUS NOTE ({title}): {PARTIALLY_REPEALED_ACTS[title]}")
+    notes.append(reference_context)
+    return "\n".join(n for n in notes if n)
+
+
+SECOND_LOOK_TIMEOUT_GRACE = 2.0
+
+
+async def _check(query, excerpts, body, notes, cfg, session_id, run: _RunLog):
+    """One second-opinion call, bounded; sets run.verdict. Never raises."""
+    try:
+        verdict = await asyncio.wait_for(
+            second_opinion.check_answer(query, excerpts, body, notes=notes, config=cfg),
+            cfg.timeout_s + SECOND_LOOK_TIMEOUT_GRACE)
+    except Exception as e:   # includes the wait_for timeout; cancellation propagates
+        logger.warning(LogEvent.CLAUDE_ERROR, f"Second opinion failed: {type(e).__name__}")
+        verdict = None
+    run.verdict = verdict
+    if verdict is not None:
+        second_opinion.log_verdict(verdict, session_id)
+    return verdict
+
+
+async def _web(query, cfg, run: _RunLog):
+    """One web-context call, bounded; sets run.web. Never raises."""
+    try:
+        ctx = await asyncio.wait_for(web_context.fetch_web_context(query, config=cfg),
+                                     cfg.timeout_s + SECOND_LOOK_TIMEOUT_GRACE)
+    except Exception as e:
+        logger.warning(LogEvent.CLAUDE_ERROR, f"Web context failed: {type(e).__name__}")
+        ctx = None
+    run.web = ctx
+    return ctx
+
+
+# Shadow checks run after the response has gone; references are kept here so
+# the tasks are not garbage-collected before they finish.
+_background: set = set()
+
+
+def _in_background(coro) -> asyncio.Task:
+    task = asyncio.get_running_loop().create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    return task
+
+
+async def _drain_background():
+    """Wait for every pending shadow check and its log line (tests, shutdown)."""
+    while _background:
+        await asyncio.gather(*list(_background), return_exceptions=True)
+
+
+async def _second_look(query: str, *, is_legal_query: bool, refused: bool, has_attachments: bool,
+                       excerpts: List[dict], reference_context: str, body: str, footer: str,
+                       sources_count: int, session_id: str, run: _RunLog) -> tuple[str, str]:
+    """After the answer is final: the second opinion and the web context.
+    Returns (caution, web_block), each "" when off, skipped or failed. Never
+    raises. excerpts are every excerpt Claude was shown, searched and fetched;
+    body is Claude's answer without the SOURCES line and without Bowen's footer.
+
+    What the user can see is awaited, concurrently: the check in enforce mode
+    and the web context. A shadow-mode check changes nothing the user sees, so
+    it is not awaited: it runs as run.shadow after the response, and the
+    query-log line is written when it ends (_log_turn)."""
+    try:
+        so_cfg, web_cfg = SECOND_OPINION_CONFIG, WEB_CONTEXT_CONFIG
+        run_check = second_opinion.should_check(
+            so_cfg, is_legal_query=is_legal_query, refused=refused, has_attachments=has_attachments)
+        run_web = web_context.should_fetch(
+            web_cfg, query=query, is_legal_query=is_legal_query, refused=refused,
+            sources_count=sources_count, answer_text=_join_footer(body, footer))
+        check = None
+        if run_check:
+            check = _check(query, excerpts, body, _checker_notes(query, reference_context, excerpts),
+                           so_cfg, session_id, run)
+            if so_cfg.mode != "enforce":
+                run.shadow = _in_background(check)
+                check = None
+        if check is None and not run_web:
+            return "", ""
+        verdict, ctx = await asyncio.gather(check or _none(), _web(query, web_cfg, run) if run_web else _none())
+        caution = second_opinion.caution_text(verdict, so_cfg.mode) if check is not None else ""
+        return caution, web_context.render_block(ctx)
+    except Exception as e:
+        logger.warning(LogEvent.CLAUDE_ERROR, f"Second look failed: {type(e).__name__}")
+        return "", ""
+
+
+def _log_turn(run: _RunLog, fetched: Optional[list], **fields):
+    """log_query now, or, while a shadow check is still running, when it ends
+    (so its verdict is in the same line). response_time_ms is the user's wait,
+    measured by the caller, not the check's."""
+    def write():
+        log_query(**fields, extra=run.fields(fetched))
+
+    task = run.shadow
+    if task is None or task.done():
+        write()
+        return
+
+    async def after():
+        try:
+            await task
+        except BaseException:
+            pass
+        write()
+
+    _in_background(after())
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -1782,7 +2605,7 @@ async def chat(request: ChatRequest, req: Request):
 
     # Skip retrieval for clearly non-legal casual messages
     # Attachment-only messages (empty query) skip retrieval — Claude analyses the document directly
-    is_legal_query, results, context, reference_context = _retrieve_for_query(
+    is_legal_query, results, context, reference_context, run = await _retrieve(
         query, detected_act, session_id
     )
 
@@ -1815,20 +2638,34 @@ async def chat(request: ChatRequest, req: Request):
                     },
                 })
 
-    # Generate response
+    # Generate response. On a legal question Claude may fetch sections too;
+    # they join the search results as sources the SOURCES line can name.
+    fetched = [] if is_legal_query else None
     raw_text = await generate_response(
         query, context, reference_context, session_id,
         attachment_context=attachment_context.strip(),
         image_blocks=image_blocks if image_blocks else None,
+        fetched=fetched,
     )
 
     # Sources are the retrieved excerpts the answer says it used, nothing else.
     # A declined request gets the fixed message, no sources and no footer.
-    if raw_text is REFUSED:
-        response_text, source_dicts = REFUSAL_MESSAGE, []
+    excerpts = results + (fetched or [])
+    refused = raw_text is REFUSED
+    if refused:
+        response_text, source_dicts, shown = REFUSAL_MESSAGE, [], REFUSAL_MESSAGE
     else:
-        response_text, source_dicts = finalise_answer(
-            raw_text, results, is_legal_query, footer_acts(query, detected_act))
+        body, footer, source_dicts = _finalise(raw_text, excerpts, is_legal_query,
+                                               footer_acts(query, detected_act))
+        response_text = _join_footer(body, footer)
+        # The second opinion and the web context: a caution line (enforce mode
+        # only) and a labelled web block after the answer. Neither is stored in
+        # history, and web links are never sources.
+        caution, web_block = await _second_look(
+            query, is_legal_query=is_legal_query, refused=False, has_attachments=has_attachments,
+            excerpts=excerpts, reference_context=reference_context, body=body, footer=footer,
+            sources_count=len(source_dicts), session_id=session_id, run=run)
+        shown = _join_footer(_join_footer(response_text, caution), web_block)
     sources = [Source(**d) for d in source_dicts]
     _store_history(session_id, query, response_text)
 
@@ -1836,20 +2673,21 @@ async def chat(request: ChatRequest, req: Request):
     response_time_ms = int((time.time() - start_time) * 1000)
 
     # Log query to JSON file
-    log_query(
+    _log_turn(
+        run, fetched,
         session_id=session_id,
         query=query,
-        response=response_text,
+        response=shown,
         detected_act=detected_act,
         sources_count=len(sources),
-        response_time_ms=response_time_ms
+        response_time_ms=response_time_ms,
     )
 
     # Log response metrics
     logger.log_chat_response(session_id, response_time_ms, len(sources), success=True)
 
     return ChatResponse(
-        response=response_text,
+        response=shown,
         sources=sources,
         disclaimer=DISCLAIMER
     )
@@ -1876,7 +2714,7 @@ async def chat_stream(request: ChatRequest, req: Request):
     detected_act = _act_in_play(query, session_id)
     logger.log_chat_request(session_id, len(query), detected_act)
 
-    is_legal_query, results, context, reference_context = _retrieve_for_query(
+    is_legal_query, results, context, reference_context, run = await _retrieve(
         query, detected_act, session_id
     )
 
@@ -1911,19 +2749,27 @@ async def chat_stream(request: ChatRequest, req: Request):
     async def event_stream():
         filt = SourcesLineFilter()
         refused = False
+        fetched = [] if is_legal_query else None
         try:
             async for chunk in generate_response_stream(
                 query, context, reference_context, session_id,
                 attachment_context=attachment_context.strip(),
                 image_blocks=image_blocks if image_blocks else None,
+                fetched=fetched,
             ):
                 if chunk is REFUSED:
                     refused = True
+                    continue
+                if isinstance(chunk, FetchStatus):
+                    # Only before the first token (a fetch is declined once
+                    # text has been shown); the client shows it until then.
+                    yield f"data: {json.dumps({'type': 'status', 'text': chunk.text})}\n\n"
                     continue
                 out = filt.feed(chunk)
                 if out:
                     yield f"data: {json.dumps({'type': 'token', 'text': out})}\n\n"
 
+            body = footer = ""
             if refused:
                 # Fixed message, no sources, no footer. A partial answer already
                 # streamed cannot be withdrawn (the client has no such event), so
@@ -1934,27 +2780,48 @@ async def chat_stream(request: ChatRequest, req: Request):
             else:
                 # Same post-processing as /chat: strip the SOURCES line, keep only
                 # the retrieved excerpts the answer used, add the not-held footer.
-                body, footer, sources = _finalise(filt.full_text, results, is_legal_query,
-                                                  footer_acts(query, detected_act))
+                body, footer, sources = _finalise(filt.full_text, results + (fetched or []),
+                                                  is_legal_query, footer_acts(query, detected_act))
                 tail = stream_tail(body, footer, filt.emitted)
                 response_text = _join_footer(body, footer)
             if tail:
                 yield f"data: {json.dumps({'type': 'token', 'text': tail})}\n\n"
             _store_history(session_id, query, response_text)
 
-            # Send sources and disclaimer as final event
+            # Send sources and disclaimer now; the sources box shows at once.
             yield f"data: {json.dumps({'type': 'done', 'sources': sources, 'disclaimer': DISCLAIMER})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            return
 
-            # Log after stream completes
+        # After "done": the caution line (enforce mode) and the web block, as
+        # one more token. The client appends tokens that arrive after "done".
+        # This part never sends an "error" event: the client would delete the
+        # question and the answer already on screen.
+        shown = response_text
+        try:
+            if not refused:
+                caution, web_block = await _second_look(
+                    query, is_legal_query=is_legal_query, refused=False,
+                    has_attachments=has_attachments, excerpts=results + (fetched or []),
+                    reference_context=reference_context, body=body, footer=footer,
+                    sources_count=len(sources), session_id=session_id, run=run)
+                extra_tail = "\n\n".join(x for x in (caution, web_block) if x)
+                if extra_tail:
+                    shown = _join_footer(_join_footer(response_text, caution), web_block)
+                    yield f"data: {json.dumps({'type': 'token', 'text': chr(10) * 2 + extra_tail})}\n\n"
+        except Exception as e:
+            logger.warning(LogEvent.CLAUDE_ERROR, f"Stream tail failed: {type(e).__name__}")
+        finally:
+            # Logged here so that a client leaving during the tail still logs the turn.
             response_time_ms = int((time.time() - start_time) * 1000)
-            log_query(
+            _log_turn(
+                run, fetched,
                 session_id=session_id, query=query,
-                response=response_text, detected_act=detected_act,
+                response=shown, detected_act=detected_act,
                 sources_count=len(sources), response_time_ms=response_time_ms,
             )
             logger.log_chat_response(session_id, response_time_ms, len(sources), success=True)
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

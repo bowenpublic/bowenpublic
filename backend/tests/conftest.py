@@ -30,6 +30,11 @@ DEFAULT_FIXTURE = REPO_ROOT / "backend" / "tests" / "fixtures" / "mini"
 os.environ.setdefault("EMBEDDINGS_DIR", str(DEFAULT_FIXTURE))
 os.environ.setdefault("BOWEN_STUB_LLM", "1")
 os.environ.setdefault("ANTHROPIC_API_KEY", "")  # load_dotenv() will not override
+# Same for the second-opinion and web-context vendors: backend/.env may hold
+# their keys, and main.py's load_dotenv() would otherwise read them. Tests that
+# need either module on inject a config with a fake key and a fake transport.
+os.environ["OPENAI_API_KEY"] = ""
+os.environ["PERPLEXITY_API_KEY"] = ""
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
@@ -170,12 +175,15 @@ def client(app_module):
 
 @pytest.fixture(autouse=True)
 def clean_history(app_module):
-    """Conversation history is process-global; keep tests independent."""
+    """Conversation history and the stub client's script are process-global;
+    keep tests independent."""
     app_module.conversation_history.clear()
     app_module.session_acts.clear()
+    app_module.STUB_CLIENT.beta.messages.reset()
     yield
     app_module.conversation_history.clear()
     app_module.session_acts.clear()
+    app_module.STUB_CLIENT.beta.messages.reset()
 
 
 @pytest.fixture(scope="session")

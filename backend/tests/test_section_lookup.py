@@ -245,3 +245,87 @@ def test_named_section_comes_only_from_the_named_act(app_module, fixture_acts):
     named = [r for r in results if r["section_number"].strip() == "48"]
     assert named and results[0]["act_title"] == "Crimes Act 1961"
     assert all(r["act_title"] == "Crimes Act 1961" for r in named)
+
+
+# --- fetch_section_text: the tool's lookup (13 Nov) ----------------------------
+
+@pytest.mark.parametrize("act,section", [
+    (RTA, "77"),
+    ("Residential Tenancies Act", "77"),     # no year
+    ("the Residential Tenancies Act 1986", "s 77"),
+    ("RTA", "section 77(2)(a)"),            # short name; subsections dropped
+])
+def test_fetch_finds_every_chunk_in_order(app_module, act, section):
+    text, result = app_module.fetch_section_text(act, section)
+    rows = [i for i, m in enumerate(app_module.metadata)
+            if m["act_title"] == RTA and m["section_number"].strip() == "77"]
+    assert len(rows) > 2
+    assert result["text"] == " ".join(app_module.metadata[i]["text"] for i in rows)
+    assert result["act_title"] == RTA and result["section_number"] == "77"
+    assert result["fetched"] is True
+    assert set(app_module._source_from_result(result)) == {
+        "act_title", "section_number", "section_heading", "url", "excerpt", "score"}
+    assert text.startswith("FETCHED FROM DATABASE")
+    assert f'"{RTA} s 77"' in text and "**Section 77 - 77 Jurisdiction of Tribunal**" in text
+
+
+def test_fetch_uses_the_same_row_lookup_as_named_sections(app_module):
+    """Both go through _section_rows: same rows for the same (act, section)."""
+    by_lookup = app_module._section_rows({"77"}, lambda i, m: m["act_title"] == RTA)["77"]
+    _, result = app_module.fetch_section_text(RTA, "77")
+    assert result["text"].startswith(app_module.metadata[by_lookup[0]]["text"])
+
+
+def test_fetch_unknown_section(app_module):
+    text, result = app_module.fetch_section_text(RTA, "999")
+    assert result is None
+    assert text.startswith("NO SUCH SECTION") and "999" in text
+
+
+def test_fetch_act_not_held(app_module):
+    text, result = app_module.fetch_section_text("Holidays Act 2003", "16")
+    assert result is None and text.startswith("NOT HELD")
+    assert "Holidays Act 2003" in text
+
+
+def test_fetch_repealed_act_says_so(app_module):
+    title = sorted(app_module.REPEALED_TITLES)[0]
+    text, result = app_module.fetch_section_text(title, "1")
+    assert result is None
+    assert text.startswith("NOT HELD") and "repealed" in text
+
+
+def test_fetch_ambiguous_act_lists_only_held_titles(app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "_corpus_titles",
+                        lambda: (["Crimes Act 1908", "Crimes Act 1961"], {}))
+    text, result = app_module.fetch_section_text("Crimes Act", "1")
+    assert result is None and text.startswith("NOT FOUND")
+    assert "Crimes Act 1908; Crimes Act 1961" in text
+
+
+def test_long_section_is_capped_and_find_picks_the_part(app_module, monkeypatch):
+    rows = [i for i, m in enumerate(app_module.metadata)
+            if m["act_title"] == RTA and m["section_number"].strip() == "77"]
+    texts = [app_module.metadata[i]["text"] for i in rows]
+    cap = max(len(a) + len(b) for a, b in zip(texts, texts[1:])) + 20
+    assert sum(len(t) for t in texts) > cap
+    monkeypatch.setattr(app_module, "MAX_FETCH_CHARS", cap)
+    # Without find: the start, and a note on how to get the rest.
+    _, start = app_module.fetch_section_text(RTA, "77")
+    assert start["text"].startswith(texts[0]) and len(start["text"]) <= app_module.MAX_FETCH_CHARS + 20
+    text, _ = app_module.fetch_section_text(RTA, "77")
+    assert "only its start is shown" in text
+    # With find: the chunk holding the phrase, and the one after it.
+    k = len(texts) - 3
+    phrase = " ".join(texts[k].split()[5:10])
+    assert phrase and all(phrase not in t for t in texts[:k])
+    text, picked = app_module.fetch_section_text(RTA, "77", find=phrase.upper())
+    assert picked["text"].startswith("[...] " + texts[k])
+    assert texts[k + 1][:40] in picked["text"]
+    assert f'containing "{phrase.upper()}"' in text
+
+
+def test_fetch_find_is_ignored_when_the_section_fits(app_module):
+    _, whole = app_module.fetch_section_text(RTA, "18")
+    _, found = app_module.fetch_section_text(RTA, "18", find="not in the text at all")
+    assert whole["text"] == found["text"]

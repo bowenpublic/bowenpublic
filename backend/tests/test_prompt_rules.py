@@ -44,7 +44,12 @@ def test_unseen_section_rule_is_in_rule_2(app_module):
     rule2 = prompt[prompt.index("\n2. "):prompt.index("\n3. ")]
     assert UNSEEN_RULE in rule2
     assert "not in a partial answer under rule 4" in rule2
-    assert "You may say that you did not retrieve it." in rule2
+    # 13 Nov: "I hold the Act, but I didn't retrieve section 6" gave no next
+    # step. Rule 2 now says fetch it, or say it wasn't pulled and how to ask.
+    assert "If your answer needs it, fetch it (FETCHING A SECTION)." in rule2
+    assert ("\"Section 6 wasn't among the sections I pulled for this answer. Ask me 'what "
+            "does section 6 of the Lawyers and Conveyancers Act say' and I'll fetch it.\"") in rule2
+    assert "did not retrieve" not in rule2 and "didn't retrieve" not in rule2
     assert "may be named as it is mentioned there, but described no further" in rule2
     assert "Your earlier answers in this conversation are not excerpts" in rule2
 
@@ -56,9 +61,9 @@ def test_rule_4_points_back_to_rule_2(app_module):
 
 def test_rule_3b_allows_saying_a_named_section_was_not_retrieved(app_module):
     assert ("b. name its Parts, subparts or sections, except to say that a section the person "
-            "asked about by number was not retrieved;") in app_module.SYSTEM_PROMPT
-    assert "(other than to say that a section the person asked about was not retrieved)" in (
-        app_module.NO_EXCERPTS_CONTEXT)
+            "asked about by number was not among the sections you pulled;") in app_module.SYSTEM_PROMPT
+    assert ("(other than to say that a section the person asked about was not among the "
+            "sections you pulled)") in app_module.NO_EXCERPTS_CONTEXT
 
 
 @pytest.mark.parametrize("context_kind", ["searched", "no_excerpts", "casual"])
@@ -131,3 +136,40 @@ def test_retrieval_instruction_reaches_the_searched_path(app_module, monkeypatch
     text = _sent_user_text(app_module, monkeypatch, client, q)
     assert ("If the user asks why you could not find or retrieve something, reply with the "
             "fixed sentence in rule 9 of your instructions") in text
+
+
+# --- fetch_section and identity (13 Nov) ----------------------------------------
+
+def test_fetching_section_states_when_to_fetch(app_module):
+    prompt = app_module.SYSTEM_PROMPT
+    block = prompt[prompt.index("## FETCHING A SECTION"):prompt.index("## RULES")]
+    assert "an excerpt your answer relies on depends on another section" in block
+    assert "the person asked about a section by number and it is not in the excerpts" in block
+    assert "Fetch before you write any of the answer" in block
+    assert "A section you have neither been shown nor fetched is unseen under rule 2." in block
+    assert ("A section you fetch with the fetch_section tool, when it is offered, counts as an "
+            "excerpt for this answer.") in prompt
+
+
+def test_rule_3_keeps_its_prohibitions(app_module):
+    prompt = app_module.SYSTEM_PROMPT
+    rule3 = prompt[prompt.index("\n3. "):prompt.index("\n4. ")]
+    for clause in ("a. summarise, outline or characterise what the Act provides",
+                   "c. state any entitlement, rate, test, duty or liability",
+                   "d. give any phone number, website or organisation",
+                   'then stop and end with "SOURCES: none"'):
+        assert clause in rule3
+
+
+def test_identity_says_who_runs_bowen_as_the_about_page_does(app_module):
+    """Live, 13 Nov: "I can't confirm who runs me". The prompt never said; the
+    About page (frontend/src/app/about/page.tsx) does, and this repeats it."""
+    about = (MAIN_SOURCE.parents[2] / "frontend" / "src" / "app" / "about" / "page.tsx").read_text()
+    prompt = app_module.SYSTEM_PROMPT
+    identity = prompt[prompt.index("## IDENTITY"):prompt.index("## WHERE YOUR ANSWERS")]
+    for fact in ("operated by the Bowen Public Charitable Trust",
+                 "incorporated under the Charitable Trusts Act 1957",
+                 "Registration with Charities Services is in progress"):
+        assert " ".join(fact.lower().split()) in " ".join(about.lower().split())
+        assert fact.lower() in identity.lower()
+    assert "free to use" in identity

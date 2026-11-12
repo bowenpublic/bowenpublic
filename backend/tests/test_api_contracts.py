@@ -10,6 +10,7 @@ socket leaves the machine (conftest blocks non-local connects outright).
 
 import base64
 import json
+import re
 
 import pytest
 
@@ -52,6 +53,15 @@ def citing_stub(app_module, monkeypatch):
     monkeypatch.setattr(app_module, "STUB_RESPONSE",
                         "[stub] cited answer.\n\nSOURCES: " + "; ".join(entries))
     return picked
+
+
+def assert_stream_order(types):
+    """The /chat/stream event order (13 Nov): "status" events (a section is being
+    fetched) only before the first token, then tokens, then exactly one
+    "done", then at most one more token (the second-opinion caution and/or the
+    web block, sent after the sources). Never an "error" after "done"."""
+    seq = " ".join(types)
+    assert re.fullmatch(r"(status )*(token )*done( token)?", seq), seq
 
 
 def sse_events(body: str):
@@ -261,12 +271,13 @@ def test_chat_stream_framing(client, app_module):
 
     types = [e["type"] for e in events]
     assert types.count("done") == 1, f"expected exactly one done event, got {types.count('done')}"
+    # With the second opinion and web context off (as offline), done is last.
     assert types[-1] == "done", "done must be the final event"
     assert "error" not in types
-    assert all(t == "token" for t in types[:-1]), "only token events may precede done"
-    assert types[:-1], "expected at least one token event"
+    assert_stream_order(types)
+    assert "token" in types, "expected at least one token event"
 
-    streamed = "".join(e["text"] for e in events[:-1])
+    streamed = "".join(e["text"] for e in events if e["type"] == "token")
     assert streamed == expected_stub_text(app_module)
     assert "SOURCES" not in streamed
 

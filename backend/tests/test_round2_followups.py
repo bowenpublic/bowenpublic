@@ -122,8 +122,10 @@ def test_not_held_examples_are_named_and_not_held(app_module, title):
 
 def test_held_rule_is_stated(app_module):
     assert ("If the Act that governs the question is on this list, you HOLD it: say \"I hold "
-            "the X Act but didn't retrieve the section that deals with this\". Say \"I don't "
-            "hold\" ONLY for an Act that is not on this list.") in app_module.SYSTEM_PROMPT
+            "the X Act, but the section that deals with this wasn't among the sections I pulled "
+            "for this answer\", and if the person can name the section, invite them to ask for "
+            "it by number. Say \"I don't hold\" ONLY for an Act that is not on this list."
+            ) in app_module.SYSTEM_PROMPT
 
 
 def test_no_either_or_not_held_wording_left(app_module):
@@ -186,10 +188,15 @@ def test_footer_names_held_acts(app_module):
     assert held == ["Consumer Guarantees Act 1993"]
     text, sources = app_module.finalise_answer("Not retrieved.\nSOURCES: none", [], True, held)
     assert sources == []
-    assert text.endswith("I hold the Consumer Guarantees Act 1993, but I didn't retrieve the "
-                         "section that deals with this question, so I haven't stated the rule "
-                         "here. You can read the current law at legislation.govt.nz, and "
-                         "Community Law (communitylaw.org.nz) offers free legal help.")
+    # 13 Nov: the footer uses the prompt's wording ("wasn't among the sections I
+    # pulled") and its next step (ask by section number).
+    assert text.endswith("I hold the Consumer Guarantees Act 1993, but the section that deals "
+                         "with this question wasn't among the sections I pulled for this answer, "
+                         "so I haven't stated the rule here. If you know the section number, ask "
+                         "me about it by number and I'll fetch it. You can read the current law "
+                         "at legislation.govt.nz, and Community Law (communitylaw.org.nz) offers "
+                         "free legal help.")
+    assert "didn't retrieve" not in text
     assert "don't hold" not in text
 
 

@@ -157,6 +157,8 @@ export interface StreamCallbacks {
   onToken: (text: string) => void;
   onDone: (sources: Source[], disclaimer: string) => void;
   onError: (error: string) => void;
+  /** What Bowen is doing before the first token, e.g. reading a section. */
+  onStatus?: (text: string) => void;
 }
 
 export async function sendMessageStream(
@@ -239,6 +241,8 @@ export async function sendMessageStream(
         const event = JSON.parse(jsonStr);
         if (event.type === 'token') {
           callbacks.onToken(event.text);
+        } else if (event.type === 'status') {
+          if (typeof event.text === 'string') callbacks.onStatus?.(event.text);
         } else if (event.type === 'done') {
           callbacks.onDone(event.sources || [], event.disclaimer || '');
         } else if (event.type === 'error') {

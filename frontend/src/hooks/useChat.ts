@@ -54,6 +54,8 @@ export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Shown in place of the typing indicator's phrases until the first token.
+  const [status, setStatus] = useState<string | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
 
   // Get or create session ID (persisted in localStorage)
@@ -105,6 +107,7 @@ export function useChat() {
         content,
         {
           onToken: (text) => {
+            setStatus(null);
             setMessages(prev => {
               const updated = [...prev];
               const last = updated[updated.length - 1];
@@ -128,6 +131,9 @@ export function useChat() {
             streamFailed = true;
             setError(errorMsg);
           },
+          onStatus: (text) => {
+            setStatus(text);
+          },
         },
         sessionId,
         attachments,
@@ -142,6 +148,7 @@ export function useChat() {
       setMessages(prev => prev.slice(0, -2));
     }
 
+    setStatus(null);
     setIsLoading(false);
   }, [isLoading, sessionId]);
 
@@ -168,6 +175,7 @@ export function useChat() {
   return {
     messages,
     isLoading,
+    status,
     error,
     send,
     clearMessages,

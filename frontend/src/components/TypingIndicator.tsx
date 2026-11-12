@@ -19,7 +19,12 @@ const LOADING_PHRASES = [
   'Reviewing the record...',
 ];
 
-export function TypingIndicator() {
+interface TypingIndicatorProps {
+  /** Shown instead of the rotating phrases, e.g. "Reading section 6 of the ... Act 2006…". */
+  status?: string | null;
+}
+
+export function TypingIndicator({ status }: TypingIndicatorProps = {}) {
   const [phraseIndex, setPhraseIndex] = useState(() =>
     Math.floor(Math.random() * LOADING_PHRASES.length)
   );
@@ -49,7 +54,7 @@ export function TypingIndicator() {
             <RummageKiwi className="w-full h-full" />
           </div>
           <span className="text-sm text-slate-500 transition-opacity duration-300">
-            {LOADING_PHRASES[phraseIndex]}
+            {status || LOADING_PHRASES[phraseIndex]}
           </span>
         </div>
       </div>

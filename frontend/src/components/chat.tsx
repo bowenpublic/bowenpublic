@@ -122,7 +122,7 @@ const SUPPORTERS = [
 ];
 
 export function Chat() {
-  const { messages, isLoading, error, send, clearMessages } = useChat();
+  const { messages, isLoading, status, error, send, clearMessages } = useChat();
   const [acts, setActs] = useState<Array<{ title: string; short_name: string; topics: string[] }> | null>(null);
   const [showLegislation, setShowLegislation] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -345,7 +345,7 @@ export function Chat() {
               {messages.slice(lastUserIndex).map((message, index) => (
                 <ChatMessage key={lastUserIndex + index} message={message} />
               ))}
-              {isLoading && !(messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].content) && <TypingIndicator />}
+              {isLoading && !(messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].content) && <TypingIndicator status={status} />}
               {error && (
                 <div className="flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
                   <AlertCircle className="w-5 h-5 flex-shrink-0" />
