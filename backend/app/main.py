@@ -175,7 +175,7 @@ class ChatResponse(BaseModel):
     disclaimer: str
 
 # API Version
-API_VERSION = "1.0.12"
+API_VERSION = "1.0.13"
 
 # Initialize FastAPI
 app = FastAPI(
