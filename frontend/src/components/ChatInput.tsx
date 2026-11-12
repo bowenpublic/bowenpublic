@@ -1,24 +1,16 @@
 'use client';
 
-import { useState, useRef, useEffect, FormEvent, KeyboardEvent, ChangeEvent } from 'react';
+import { useState, useRef, FormEvent, KeyboardEvent, ChangeEvent } from 'react';
 import { Send, Loader2, Paperclip, X, FileText, Image as ImageIcon } from 'lucide-react';
 import { FileAttachment } from '@/types';
 
-// Bowen brand colors from the logo
-const BRAND_COLORS = ['#5d78c5', '#ffce31', '#e25063'];
+// The logo's gradient: the same stops, at the same angle, as public/logo-mark.png
+const LOGO_GRADIENT =
+  'linear-gradient(135deg, #5d78c5 0%, #ffce31 27%, #e25063 50%, #ffce31 73%, #e25063 100%)';
 
 const ACCEPTED_TYPES = 'image/png,image/jpeg,image/gif,image/webp,application/pdf';
 const MAX_FILES = 3;
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-
-function shuffleArray<T>(array: T[]): T[] {
-  const shuffled = [...array];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return shuffled;
-}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -51,23 +43,6 @@ export function ChatInput({ onSend, isLoading, placeholder = 'Ask about NZ law..
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Randomly assign brand colors to each border side (client-only to avoid hydration mismatch)
-  const [borderColors, setBorderColors] = useState({
-    top: BRAND_COLORS[0],
-    right: BRAND_COLORS[1],
-    bottom: BRAND_COLORS[2],
-    left: BRAND_COLORS[0],
-  });
-  useEffect(() => {
-    const shuffled = shuffleArray(BRAND_COLORS);
-    setBorderColors({
-      top: shuffled[0],
-      right: shuffled[1],
-      bottom: shuffled[2],
-      left: shuffled[0],
-    });
-  }, []);
 
   const handleFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -185,14 +160,12 @@ export function ChatInput({ onSend, isLoading, placeholder = 'Ask about NZ law..
       )}
 
       <div
-        className="flex gap-3 bg-white rounded-xl p-2 shadow-lg shadow-slate-200/50"
+        className="flex gap-3 rounded-xl p-2 shadow-lg shadow-slate-200/50"
         style={{
-          borderWidth: '2px',
-          borderStyle: 'solid',
-          borderTopColor: borderColors.top,
-          borderRightColor: borderColors.right,
-          borderBottomColor: borderColors.bottom,
-          borderLeftColor: borderColors.left,
+          // Gradient border that keeps the rounded corners: white fill clipped to the
+          // padding box, logo gradient showing through the transparent border.
+          border: '2px solid transparent',
+          background: `linear-gradient(#fff, #fff) padding-box, ${LOGO_GRADIENT} border-box`,
         }}
       >
         {/* File attach button */}
