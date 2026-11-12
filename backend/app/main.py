@@ -68,6 +68,46 @@ MAX_EXPLICIT_SECTIONS = 6
 MAX_SECTION_RANGE = 6           # "ss 24 to 26" is expanded; a wider range is not
 MAX_CHUNKS_PER_SECTION = 2      # Long sections (LCA s 6 has 19 chunks) keep their best two
 
+# Claude request settings, shared by /chat and /chat/stream.
+# BOWEN_CLAUDE_MODEL swaps the model without a code change (e.g. claude-sonnet-5-5).
+CLAUDE_MODEL_ENV = "BOWEN_CLAUDE_MODEL"
+DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
+
+
+def resolve_claude_model(environ=os.environ) -> str:
+    return (environ.get(CLAUDE_MODEL_ENV) or "").strip() or DEFAULT_CLAUDE_MODEL
+
+
+CLAUDE_MODEL = resolve_claude_model()
+# Thinking is always on for Opus 5.5 and effort sets how much it thinks. The
+# API default is also medium; it is set here so a model change cannot move it.
+CLAUDE_EFFORT = "medium"
+# Thinking counts against max_tokens. This is room for it on top of the reply
+# allowance (1750, or 2500 with attachments); it does not lengthen answers.
+THINKING_TOKEN_HEADROOM = 8000
+# On a safety-classifier decline the API re-runs the request on Anthropic's
+# recommended fallback model. A model without fallbacks just runs alone.
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+CLAUDE_FALLBACKS = "default"
+
+# Shown, with no sources, when every model in the chain declines to answer.
+# Draft for the founder to approve.
+REFUSAL_MESSAGE = (
+    "I can't help with this request. If you or someone else is in danger, call 111; "
+    "to talk with a trained counsellor, call or text 1737 (free). You can read the current "
+    "law at legislation.govt.nz, and Community Law (communitylaw.org.nz) offers free legal help."
+)
+
+
+class _Refused:
+    """Returned or yielded by the generators in place of text when the model
+    declined (stop_reason "refusal"); the endpoints answer with REFUSAL_MESSAGE."""
+    def __repr__(self):
+        return "<REFUSED>"
+
+
+REFUSED = _Refused()
+
 # Offline test/swarm switch: when set, no Anthropic call is ever made.
 STUB_LLM = os.getenv("BOWEN_STUB_LLM", "").strip().lower() in ("1", "true", "yes", "on")
 # Ends with the SOURCES line every real answer carries (see finalise_answer).
@@ -175,12 +215,67 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
-class _StubAnthropicClient:
-    """Sentinel stand-in for the Anthropic client when BOWEN_STUB_LLM is set.
+def _stub_message(model: str, text: str, stop_reason: str = "end_turn", stop_details=None):
+    """A BetaMessage shaped like Opus 5.5's: an empty thinking block, then text."""
+    from anthropic.types.beta import BetaMessage
+    content = [{"type": "thinking", "thinking": "", "signature": "stub"}]
+    if text:
+        content.append({"type": "text", "text": text})
+    return BetaMessage.model_validate({
+        "id": "msg_stub", "type": "message", "role": "assistant", "model": model,
+        "content": content, "stop_reason": stop_reason, "stop_sequence": None,
+        "stop_details": stop_details, "usage": {"input_tokens": 0, "output_tokens": 0},
+    })
 
-    It has no network methods at all, so any accidental attempt to make a real
-    completion raises AttributeError rather than reaching api.anthropic.com.
+
+class _StubStream:
+    def __init__(self, message):
+        self._message = message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @property
+    def text_stream(self):
+        text = "".join(b.text for b in self._message.content if b.type == "text")
+        pieces = text.split(" ")
+        for i, piece in enumerate(pieces):
+            yield piece if i == len(pieces) - 1 else piece + " "
+
+    def get_final_message(self):
+        return self._message
+
+
+class _StubMessages:
+    """beta.messages for the stub client. Answers every request with
+    STUB_RESPONSE (read at call time, so tests can swap it) and keeps the last
+    request's arguments in .last_request."""
+    def __init__(self):
+        self.last_request = None
+
+    def create(self, **kwargs):
+        self.last_request = kwargs
+        return _stub_message(kwargs["model"], STUB_RESPONSE)
+
+    def stream(self, **kwargs):
+        self.last_request = kwargs
+        return _StubStream(_stub_message(kwargs["model"], STUB_RESPONSE))
+
+
+class _StubAnthropicClient:
+    """Stand-in for the Anthropic client when BOWEN_STUB_LLM is set.
+
+    It never opens a connection: client.beta.messages.create/stream answer
+    locally with STUB_RESPONSE in the real response shape. Nothing else is
+    defined, so any other API use raises AttributeError.
     """
+    def __init__(self):
+        self.beta = type("StubBeta", (), {})()
+        self.beta.messages = _StubMessages()
+
     def __repr__(self):
         return "<StubAnthropicClient>"
 
@@ -453,7 +548,8 @@ async def startup():
         try:
             import anthropic
             anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-            print("✓ Anthropic client initialized", flush=True)
+            print(f"✓ Anthropic client initialized (model {CLAUDE_MODEL}, effort {CLAUDE_EFFORT})",
+                  flush=True)
         except Exception as e:
             print(f"✗ Could not initialize Anthropic: {e}", flush=True)
     else:
@@ -956,9 +1052,9 @@ When using curated references, cite them as: "According to the essay on Bowen's 
 
 Provide information, not legal advice. End with the SOURCES line: the excerpts you relied on, as "Act title s section" entries separated by "; ", or "SOURCES: none"."""
 
-    # Increase max_tokens when attachments are present
+    # Increase max_tokens when attachments are present; thinking needs room on top.
     has_attachments = bool(attachment_context or image_blocks)
-    max_tokens = 2500 if has_attachments else 1750
+    max_tokens = (2500 if has_attachments else 1750) + THINKING_TOKEN_HEADROOM
 
     # Build messages array with conversation history
     # When attachments are present, use fewer history turns to stay within token limits
@@ -1251,21 +1347,17 @@ async def generate_response(
     )
 
     # History is stored by the endpoint, after finalise_answer, so that it holds
-    # the clean text (no SOURCES line).
-    if STUB_LLM:
-        return STUB_RESPONSE
-
+    # the clean text (no SOURCES line). Under BOWEN_STUB_LLM the client is the
+    # offline stub, which answers with STUB_RESPONSE.
     try:
-        message = anthropic_client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=max_tokens,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        )
-        return message.content[0].text
+        message = anthropic_client.beta.messages.create(**_claude_request(messages, max_tokens))
     except Exception as e:
         logger.error(LogEvent.CLAUDE_ERROR, f"Claude API error: {e}", error=e)
         raise_generation_failed(str(e))
+    if _check_stop(message):
+        return REFUSED
+    # A response can open with thinking blocks; the answer is the text blocks.
+    return "".join(b.text for b in message.content if b.type == "text")
 
 
 async def generate_response_stream(
@@ -1287,24 +1379,45 @@ async def generate_response_stream(
     )
 
     # As in generate_response, the endpoint stores history after finalising.
-    if STUB_LLM:
-        pieces = STUB_RESPONSE.split(" ")
-        for i, piece in enumerate(pieces):
-            yield piece if i == len(pieces) - 1 else piece + " "
-        return
-
+    # text_stream carries text deltas only, so thinking never reaches the client.
     try:
-        with anthropic_client.messages.stream(
-            model="claude-opus-4-6",
-            max_tokens=max_tokens,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        ) as stream:
+        with anthropic_client.beta.messages.stream(**_claude_request(messages, max_tokens)) as stream:
             for text in stream.text_stream:
                 yield text
+            final = stream.get_final_message()
     except Exception as e:
         logger.error(LogEvent.CLAUDE_ERROR, f"Claude API error: {e}", error=e)
         raise
+    if _check_stop(final):
+        yield REFUSED
+
+
+def _claude_request(messages: list, max_tokens: int) -> dict:
+    """Arguments for client.beta.messages.create/stream, the same for both paths."""
+    return {
+        "model": CLAUDE_MODEL,
+        "max_tokens": max_tokens,
+        "system": SYSTEM_PROMPT,
+        "messages": messages,
+        "output_config": {"effort": CLAUDE_EFFORT},
+        "betas": [FALLBACK_BETA],
+        "fallbacks": CLAUDE_FALLBACKS,
+    }
+
+
+def _check_stop(message) -> bool:
+    """True if every model in the fallback chain declined. Logs a decline and a
+    reply cut off at max_tokens."""
+    if message.stop_reason == "refusal":
+        details = getattr(message, "stop_details", None)
+        logger.warning(LogEvent.CLAUDE_ERROR, "Claude declined the request",
+                       model=getattr(message, "model", None),
+                       category=getattr(details, "category", None))
+        return True
+    if message.stop_reason == "max_tokens":
+        logger.warning(LogEvent.CLAUDE_ERROR, "Claude reply cut off at max_tokens",
+                       model=getattr(message, "model", None))
+    return False
 
 
 def _store_history(session_id: str, query: str, response_text: str):
@@ -1710,8 +1823,12 @@ async def chat(request: ChatRequest, req: Request):
     )
 
     # Sources are the retrieved excerpts the answer says it used, nothing else.
-    response_text, source_dicts = finalise_answer(
-        raw_text, results, is_legal_query, footer_acts(query, detected_act))
+    # A declined request gets the fixed message, no sources and no footer.
+    if raw_text is REFUSED:
+        response_text, source_dicts = REFUSAL_MESSAGE, []
+    else:
+        response_text, source_dicts = finalise_answer(
+            raw_text, results, is_legal_query, footer_acts(query, detected_act))
     sources = [Source(**d) for d in source_dicts]
     _store_history(session_id, query, response_text)
 
@@ -1793,24 +1910,36 @@ async def chat_stream(request: ChatRequest, req: Request):
 
     async def event_stream():
         filt = SourcesLineFilter()
+        refused = False
         try:
             async for chunk in generate_response_stream(
                 query, context, reference_context, session_id,
                 attachment_context=attachment_context.strip(),
                 image_blocks=image_blocks if image_blocks else None,
             ):
+                if chunk is REFUSED:
+                    refused = True
+                    continue
                 out = filt.feed(chunk)
                 if out:
                     yield f"data: {json.dumps({'type': 'token', 'text': out})}\n\n"
 
-            # Same post-processing as /chat: strip the SOURCES line, keep only
-            # the retrieved excerpts the answer used, add the not-held footer.
-            body, footer, sources = _finalise(filt.full_text, results, is_legal_query,
-                                              footer_acts(query, detected_act))
-            tail = stream_tail(body, footer, filt.emitted)
+            if refused:
+                # Fixed message, no sources, no footer. A partial answer already
+                # streamed cannot be withdrawn (the client has no such event), so
+                # the message follows it; history keeps the message alone.
+                sources = []
+                response_text = REFUSAL_MESSAGE
+                tail = f"\n\n{REFUSAL_MESSAGE}" if filt.emitted else REFUSAL_MESSAGE
+            else:
+                # Same post-processing as /chat: strip the SOURCES line, keep only
+                # the retrieved excerpts the answer used, add the not-held footer.
+                body, footer, sources = _finalise(filt.full_text, results, is_legal_query,
+                                                  footer_acts(query, detected_act))
+                tail = stream_tail(body, footer, filt.emitted)
+                response_text = _join_footer(body, footer)
             if tail:
                 yield f"data: {json.dumps({'type': 'token', 'text': tail})}\n\n"
-            response_text = _join_footer(body, footer)
             _store_history(session_id, query, response_text)
 
             # Send sources and disclaimer as final event

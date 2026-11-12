@@ -7,7 +7,7 @@ beautifulsoup4==4.12.3
 lxml==5.1.0
 
 # AI/ML
-anthropic>=0.84.0
+anthropic==1.17.0  # 1.x sends API version 2023-06-01; 2.x moves to 2026-10-21
 tiktoken==0.6.0
 
 # Vector Database
