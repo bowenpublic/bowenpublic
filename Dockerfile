@@ -5,6 +5,15 @@ WORKDIR /app
 # Install curl for downloading files
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
+# PyTorch, CPU-only build. The server has no GPU, and the default build pulls
+# about 2.7 GB of Nvidia libraries that are never loaded. Installed in its own
+# layer, before requirements.txt is copied, so a requirements change does not
+# download it again. sentence-transformers then finds torch already installed.
+# 2.15.0 is the version the default install resolved to on 13 Nov 2026.
+RUN pip install --no-cache-dir torch==2.15.0+cpu \
+    --index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url https://pypi.org/simple
+
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
